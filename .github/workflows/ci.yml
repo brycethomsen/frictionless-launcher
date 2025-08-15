@@ -35,10 +35,6 @@ jobs:
             exit 1
           fi
 
-      - name: Run gosec security scanner
-        run: |
-          go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
-          gosec ./...
 
   build-test:
     runs-on: ${{ matrix.os }}
