@@ -35,10 +35,12 @@ jobs:
             exit 1
           fi
 
-      - name: Check for security issues
-        uses: securecodewarrior/github-action-gosec@master
-        with:
-          args: './...'
+      - name: Install gosec
+        run: |
+          curl -sfL https://raw.githubusercontent.com/securecodewarrior/gosec/master/install.sh | sh -s latest
+          
+      - name: Run gosec security scanner
+        run: ./bin/gosec ./...
 
   build-test:
     runs-on: ${{ matrix.os }}
