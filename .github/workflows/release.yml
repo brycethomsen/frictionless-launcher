@@ -105,17 +105,17 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
-          # Copy all binaries to release assets
-          find artifacts -name "Frictionless-Launcher-*" -exec cp {} release-assets/ \;
+          # Copy all binaries to temp directory for archiving
+          find artifacts -name "Frictionless-Launcher-*" -exec cp {} . \;
           
-          # Create archives
+          # Create archives directly in release-assets
+          tar -czf release-assets/Frictionless-Launcher-linux-amd64.tar.gz Frictionless-Launcher-linux-amd64
+          tar -czf release-assets/Frictionless-Launcher-darwin-amd64.tar.gz Frictionless-Launcher-darwin-amd64
+          tar -czf release-assets/Frictionless-Launcher-darwin-arm64.tar.gz Frictionless-Launcher-darwin-arm64
+          zip release-assets/Frictionless-Launcher-windows-amd64.zip Frictionless-Launcher-windows-amd64.exe
+          
+          # Generate checksums for archives only
           cd release-assets
-          tar -czf Frictionless-Launcher-linux-amd64.tar.gz Frictionless-Launcher-linux-amd64
-          tar -czf Frictionless-Launcher-darwin-amd64.tar.gz Frictionless-Launcher-darwin-amd64
-          tar -czf Frictionless-Launcher-darwin-arm64.tar.gz Frictionless-Launcher-darwin-arm64
-          zip Frictionless-Launcher-windows-amd64.zip Frictionless-Launcher-windows-amd64.exe
-          
-          # Generate checksums
           sha256sum *.tar.gz *.zip > checksums.txt
 
       - name: Create Release
