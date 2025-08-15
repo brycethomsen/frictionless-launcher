@@ -31,7 +31,7 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          distribution: goreleaser-pro
+          distribution: goreleaser
           version: latest
           args: ${{ github.event.inputs.tag && 'release --clean' || 'build --snapshot --clean' }}
         env:
