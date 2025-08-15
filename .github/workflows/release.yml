@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (leave empty for snapshot)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -11,16 +17,22 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
-    container:
-      image: goreleaser/goreleaser-cross:v1.24.6
-      options: --privileged
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
       - name: Run GoReleaser
-        run: goreleaser release --clean
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser-pro
+          version: latest
+          args: ${{ github.event.inputs.tag && 'release --clean' || 'build --snapshot --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
