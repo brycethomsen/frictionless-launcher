@@ -35,12 +35,10 @@ jobs:
             exit 1
           fi
 
-      - name: Install gosec
-        run: |
-          curl -sfL https://raw.githubusercontent.com/securecodewarrior/gosec/master/install.sh | sh -s latest
-          
       - name: Run gosec security scanner
-        run: ./bin/gosec ./...
+        run: |
+          go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+          gosec ./...
 
   build-test:
     runs-on: ${{ matrix.os }}
