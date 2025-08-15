@@ -2,7 +2,6 @@ package main
 
 import (
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -13,18 +12,19 @@ import (
 	"time"
 
 	"fyne.io/systray"
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed icon.ico
 var iconData []byte
 
 type Config struct {
-	GamePath   string `json:"game_path"`
-	GameName   string `json:"game_name"`
-	LaunchArgs string `json:"launch_args"`
-	Enabled    bool   `json:"enabled"`
-	BootDelay  int    `json:"boot_delay"`
-	Schedule   string `json:"schedule"` // Simple schedule name from examples
+	GamePath   string `yaml:"game_path"`
+	GameName   string `yaml:"game_name"`
+	LaunchArgs string `yaml:"launch_args"`
+	Enabled    bool   `yaml:"enabled"`
+	BootDelay  int    `yaml:"boot_delay"`
+	Schedule   string `yaml:"schedule"` // Simple schedule name from examples
 }
 
 type App struct {
@@ -73,8 +73,8 @@ func (app *App) onReady() {
 
 	systray.AddSeparator()
 
-	about := systray.AddMenuItem("Edit Config", "Open config.json in default editor")
-	quit := systray.AddMenuItem("Exit", "Exit Game Launcher")
+	about := systray.AddMenuItem("Edit Config", "Open config.yaml in default editor")
+	quit := systray.AddMenuItem("Exit", "Exit Frictionless Launcher")
 
 	// Update toggle text based on current state
 	app.updateToggleMenuItem(toggleEnabled)
@@ -127,7 +127,7 @@ func (app *App) loadConfig() {
 	}
 
 	if _, err := os.Stat(app.configPath); os.IsNotExist(err) {
-		fmt.Println("No config found, creating default config.json")
+		fmt.Println("No config found, creating default config.yaml")
 		app.saveConfig()
 		return
 	}
@@ -139,10 +139,10 @@ func (app *App) loadConfig() {
 		return
 	}
 
-	if err := json.Unmarshal(data, app.config); err != nil {
+	if err := yaml.Unmarshal(data, app.config); err != nil {
 		log.Printf("Error parsing config: %v", err)
-		fmt.Println("Config file has invalid JSON, using defaults")
-		fmt.Println("Please check your config.json file for syntax errors")
+		fmt.Println("Config file has invalid YAML, using defaults")
+		fmt.Println("Please check your config.yaml file for syntax errors")
 		return
 	}
 
@@ -150,7 +150,7 @@ func (app *App) loadConfig() {
 }
 
 func (app *App) saveConfig() {
-	data, err := json.MarshalIndent(app.config, "", "  ")
+	data, err := yaml.Marshal(app.config)
 	if err != nil {
 		log.Printf("Error marshaling config: %v", err)
 		return
@@ -259,7 +259,7 @@ func (app *App) updateToggleMenuItem(item *systray.MenuItem) {
 }
 
 func (app *App) updateTrayIcon() {
-	tooltip := "Game Launcher - "
+	tooltip := "Frictionless Launcher - "
 	if app.config.Enabled {
 		if app.shouldLaunchNow() {
 			tooltip += "Active (in schedule)"
@@ -336,16 +336,16 @@ func getConfigPath() string {
 
 	switch {
 	case strings.Contains(strings.ToLower(os.Getenv("OS")), "windows"):
-		// Windows: %LOCALAPPDATA%\GameLauncher\config.json
-		configDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "GameLauncher")
+		// Windows: %LOCALAPPDATA%\FrictionlessLauncher\config.json
+		configDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher")
 	case fileExists("/Users"):
-		// macOS: ~/Library/Application Support/GameLauncher/config.json
+		// macOS: ~/Library/Application Support/FrictionlessLauncher/config.json
 		home, _ := os.UserHomeDir()
-		configDir = filepath.Join(home, "Library", "Application Support", "GameLauncher")
+		configDir = filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher")
 	default:
-		// Linux: ~/.config/GameLauncher/config.json
+		// Linux: ~/.config/FrictionlessLauncher/config.json
 		home, _ := os.UserHomeDir()
-		configDir = filepath.Join(home, ".config", "GameLauncher")
+		configDir = filepath.Join(home, ".config", "FrictionlessLauncher")
 	}
 
 	// Create config directory if it doesn't exist
@@ -355,5 +355,5 @@ func getConfigPath() string {
 		return localConfig
 	}
 
-	return filepath.Join(configDir, "config.json")
+	return filepath.Join(configDir, "config.yaml")
 }

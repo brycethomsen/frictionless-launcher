@@ -1,0 +1,38 @@
+{
+  "name": "Frictionless Launcher Dev",
+  "image": "mcr.microsoft.com/devcontainers/go:1.24",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "postCreateCommand": "sudo chown -R vscode:vscode /go && go mod download && wget -O- https://github.com/goreleaser/goreleaser/releases/latest/download/goreleaser_Linux_x86_64.tar.gz | tar xz -C /tmp && sudo mv /tmp/goreleaser /usr/local/bin/",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-vscode.vscode-json",
+        "redhat.vscode-yaml",
+        "GitHub.vscode-github-actions"
+      ],
+      "settings": {
+        "go.toolsManagement.checkForUpdates": "local",
+        "go.useLanguageServer": true,
+        "go.gopath": "/go",
+        "go.goroot": "/usr/local/go",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        }
+      }
+    }
+  },
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=frictionless-go-cache,target=/go/pkg,type=volume"
+  ],
+  "forwardPorts": [],
+  "portsAttributes": {},
+  "containerEnv": {
+    "CGO_ENABLED": "0"
+  }
+}
