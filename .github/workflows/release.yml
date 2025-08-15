@@ -111,7 +111,6 @@ jobs:
           # Create archives
           cd release-assets
           tar -czf Frictionless-Launcher-linux-amd64.tar.gz Frictionless-Launcher-linux-amd64
-          tar -czf Frictionless-Launcher-linux-arm64.tar.gz Frictionless-Launcher-linux-arm64
           tar -czf Frictionless-Launcher-darwin-amd64.tar.gz Frictionless-Launcher-darwin-amd64
           tar -czf Frictionless-Launcher-darwin-arm64.tar.gz Frictionless-Launcher-darwin-arm64
           zip Frictionless-Launcher-windows-amd64.zip Frictionless-Launcher-windows-amd64.exe
