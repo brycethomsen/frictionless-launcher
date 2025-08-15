@@ -32,9 +32,28 @@ deps:
 test:
 	go test ./...
 
+# Run tests with coverage and race detection (matches CI)
+test-ci:
+	go test -v -race -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+
+# Quick test with verbose output
+test-verbose:
+	go test -v ./...
+
 # Format code
 fmt:
 	go fmt ./...
+
+# Check formatting
+fmt-check:
+	@if [ "$$(gofmt -s -l . | wc -l)" -gt 0 ]; then \
+		echo "The following files are not formatted:"; \
+		gofmt -s -l .; \
+		exit 1; \
+	else \
+		echo "All files are properly formatted"; \
+	fi
 
 # Run linter (if golangci-lint is installed)
 lint:
@@ -43,6 +62,14 @@ lint:
 	else \
 		echo "golangci-lint not installed, skipping..."; \
 	fi
+
+# Run go vet
+vet:
+	go vet ./...
+
+# Run all quality checks (like CI)
+check: fmt-check vet test-ci lint
+	@echo "All quality checks passed!"
 
 # Cross-compilation targets
 # macOS Intel (x86_64)
@@ -90,11 +117,16 @@ help:
 	@echo Frictionless Launcher Build System
 	@echo
 	@echo Development targets:
-	@echo "  build     - Build for current platform"
-	@echo "  run       - Run without building"
-	@echo "  test      - Run tests"
-	@echo "  fmt       - Format code"
-	@echo "  lint      - Run linter"
+	@echo "  build        - Build for current platform"
+	@echo "  run          - Run without building"
+	@echo "  test         - Run tests"
+	@echo "  test-ci      - Run tests with coverage and race detection"
+	@echo "  test-verbose - Run tests with verbose output"
+	@echo "  fmt          - Format code"
+	@echo "  fmt-check    - Check code formatting"
+	@echo "  vet          - Run go vet"
+	@echo "  lint         - Run linter"
+	@echo "  check        - Run all quality checks (like CI)"
 	@echo
 	@echo Platform-specific targets:
 	@echo "  mac-intel    - Build for macOS Intel (x86_64)"
@@ -110,4 +142,4 @@ help:
 	@echo "  deps      - Update dependencies"
 	@echo "  help      - Show this help"
 
-.PHONY: all build run clean deps test fmt lint mac-intel mac-arm windows windows-dev linux steamos all-platforms help
+.PHONY: all build run clean deps test test-ci test-verbose fmt fmt-check vet lint check mac-intel mac-arm windows windows-dev linux steamos all-platforms help
