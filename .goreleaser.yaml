@@ -1,0 +1,78 @@
+version: 2
+
+project_name: Frictionless-Launcher
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - env:
+      - CGO_ENABLED=1  # Required for fyne.io/systray
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    flags:
+      - -trimpath
+    overrides:
+      - goos: windows
+        ldflags:
+          - -s -w -X main.version={{.Version}}
+          - -H windowsgui  # Hide console window on Windows
+
+archives:
+  - name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - README.md
+      - LICENSE*
+      - icon.ico
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  github:
+    owner: brycethomsen
+    name: frictionless
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"
+  header: |
+    ## What's Changed
+  footer: |
+    **Full Changelog**: https://github.com/brycethomsen/frictionless/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+universal_binaries:
+  - replace: true
+    name_template: '{{ .ProjectName }}'
+    hooks:
+      post: 
+        - cmd: codesign -s - {{ .Path }}
+          env:
+            - GOOS=darwin
