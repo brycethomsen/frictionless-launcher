@@ -325,7 +325,7 @@ func getConfigPath() string {
 	// Try local directory first (for development/portable installs)
 	exe, _ := os.Executable()
 	localDir := filepath.Dir(exe)
-	localConfig := filepath.Join(localDir, "config.json")
+	localConfig := filepath.Join(localDir, "config.yaml")
 
 	if _, err := os.Stat(localConfig); err == nil {
 		return localConfig
