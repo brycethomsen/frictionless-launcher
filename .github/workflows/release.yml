@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (leave empty for snapshot)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -27,6 +33,6 @@ jobs:
         with:
           distribution: goreleaser-pro
           version: latest
-          args: release --clean
+          args: ${{ github.event.inputs.tag && 'release --clean' || 'build --snapshot --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
