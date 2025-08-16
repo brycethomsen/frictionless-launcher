@@ -294,7 +294,7 @@ func (app *App) openConfigFile() {
 
 	switch {
 	case runtime.GOOS == "windows":
-		// Windows: use rundll32 to open the file with the default handler (avoids issues with "start" and empty string)
+		// Windows: use rundll32 to open the file with the default handler (preferred over "start" to avoid issues with empty strings and console flashes in cross-platform builds)
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", configPath)
 	case fileExists("/usr/bin/open"):
 		// macOS: use open command
