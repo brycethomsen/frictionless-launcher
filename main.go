@@ -342,7 +342,7 @@ func (app *App) openLogFile() {
 	switch {
 	case runtime.GOOS == "windows":
 		// Windows: use start command (brief console flash is unavoidable in cross-platform builds)
-		// Windows: use rundll32 to open the log file with the default handler
+		// Windows: use rundll32 to open the log file with the default handler (brief console flash is unavoidable in cross-platform builds)
 		// Windows: use rundll32 to open the log file with the default handler (brief console flash is unavoidable in cross-platform builds)
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", logPath)
 	case fileExists("/usr/bin/open"):
