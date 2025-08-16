@@ -1,0 +1,35 @@
+{
+  // Go-specific formatting
+  "[go]": {
+    "editor.formatOnSave": true,
+    "editor.formatOnType": true,
+    "editor.formatOnPaste": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  
+  // Go tool settings
+  "go.formatTool": "gofmt",
+  "go.formatFlags": ["-s"], // Simplify code
+  "go.lintOnSave": "package",
+  "go.vetOnSave": "package",
+  "go.useLanguageServer": true,
+  "go.toolsManagement.autoUpdate": true,
+  
+  // Editor settings for Go (tabs, not spaces)
+  "editor.tabSize": 4,
+  "editor.insertSpaces": false,
+  "editor.detectIndentation": false,
+  
+  // Test settings
+  "go.buildOnSave": "workspace",
+  "go.testTimeout": "30s",
+  
+  // Additional helpful settings
+  "files.associations": {
+    "*.go": "go"
+  },
+  "go.coverOnSave": false, // Set to true if you want coverage on every save
+  "go.gocodeAutoBuild": true
+}
