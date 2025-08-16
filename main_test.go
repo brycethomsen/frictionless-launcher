@@ -556,19 +556,19 @@ func TestApp_SetupLogging(t *testing.T) {
 
 	// We can't easily test the full setupLogging method due to OS dependencies,
 	// but we can test that it doesn't panic and sets up the logFile field
-	
+
 	// Note: This test will use the actual OS paths, so we'll just verify basic functionality
 	app.setupLogging()
-	
+
 	// Verify logFile was set (if logging setup succeeded)
 	// On some systems this might fail due to permissions, so we allow for that
 	if app.logFile != nil {
 		// Log file was successfully opened
 		defer app.closeLogFile() // Clean up
-		
+
 		// Verify we can write to the log
 		log.Printf("Test log message from setupLogging test")
-		
+
 		// The logFile should be a valid file handle
 		if app.logFile.Name() == "" {
 			t.Error("Log file should have a valid name")
@@ -648,7 +648,7 @@ func TestOpenConfigFile_PathGeneration(t *testing.T) {
 func TestOpenLogFile_CrossPlatform(t *testing.T) {
 	// Test the cross-platform command generation logic
 	var expectedCommand string
-	
+
 	switch {
 	case runtime.GOOS == "windows":
 		expectedCommand = "rundll32"

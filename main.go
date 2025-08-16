@@ -31,7 +31,7 @@ type App struct {
 	config        *Config
 	configPath    string
 	launchPending bool
-	shouldCancel  int32 // Atomic flag: 1 = cancel, 0 = continue
+	shouldCancel  int32    // Atomic flag: 1 = cancel, 0 = continue
 	logFile       *os.File // Log file handle for proper cleanup
 }
 
@@ -40,7 +40,7 @@ func main() {
 		configPath:    getConfigPath(),
 		launchPending: false,
 	}
-	
+
 	// Set up logging to file and store handle in app
 	app.setupLogging()
 	defer app.closeLogFile() // Ensure log file is closed on exit
