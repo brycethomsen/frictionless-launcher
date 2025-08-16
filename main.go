@@ -444,7 +444,7 @@ func setupLogging() {
 
 	// Clean up old log files before setting up new logging
 	cleanupOldLogs(logDir)
-	
+
 	// Set log output to file with timestamp
 	log.SetOutput(file)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -458,24 +458,24 @@ func cleanupOldLogs(logDir string) {
 		// Directory doesn't exist or can't be read, nothing to clean up
 		return
 	}
-	
+
 	// Calculate cutoff time (1 week ago)
 	oneWeekAgo := time.Now().AddDate(0, 0, -7)
-	
+
 	for _, entry := range entries {
 		// Only process .log files
 		if !strings.HasSuffix(entry.Name(), ".log") {
 			continue
 		}
-		
+
 		filePath := filepath.Join(logDir, entry.Name())
-		
+
 		// Get file info to check modification time
 		info, err := entry.Info()
 		if err != nil {
 			continue // Skip files we can't get info for
 		}
-		
+
 		// Delete files older than 1 week
 		if info.ModTime().Before(oneWeekAgo) {
 			if err := os.Remove(filePath); err != nil {
