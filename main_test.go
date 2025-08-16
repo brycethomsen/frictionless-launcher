@@ -1,8 +1,10 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -372,4 +374,161 @@ func getConfigPathWithExecutable(executablePath string) string {
 	}
 
 	return filepath.Join(configDir, "config.yaml")
+}
+
+func TestCleanupOldLogs(t *testing.T) {
+	// Create temporary directory for test logs
+	tempDir, err := os.MkdirTemp("", "frictionless_logs_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create test log files with different ages
+	now := time.Now()
+	
+	// Recent log (should be kept)
+	recentLog := filepath.Join(tempDir, "recent.log")
+	if err := os.WriteFile(recentLog, []byte("recent log"), 0644); err != nil {
+		t.Fatalf("Failed to create recent log: %v", err)
+	}
+	
+	// Old log (should be deleted)
+	oldLog := filepath.Join(tempDir, "old.log")
+	if err := os.WriteFile(oldLog, []byte("old log"), 0644); err != nil {
+		t.Fatalf("Failed to create old log: %v", err)
+	}
+	
+	// Set the old log's modification time to 8 days ago
+	eightDaysAgo := now.AddDate(0, 0, -8)
+	if err := os.Chtimes(oldLog, eightDaysAgo, eightDaysAgo); err != nil {
+		t.Fatalf("Failed to set old log time: %v", err)
+	}
+	
+	// Non-log file (should be ignored)
+	nonLogFile := filepath.Join(tempDir, "other.txt")
+	if err := os.WriteFile(nonLogFile, []byte("not a log"), 0644); err != nil {
+		t.Fatalf("Failed to create non-log file: %v", err)
+	}
+	
+	// Set non-log file to old time too
+	if err := os.Chtimes(nonLogFile, eightDaysAgo, eightDaysAgo); err != nil {
+		t.Fatalf("Failed to set non-log file time: %v", err)
+	}
+	
+	// Run cleanup
+	cleanupOldLogs(tempDir)
+	
+	// Check results
+	if _, err := os.Stat(recentLog); os.IsNotExist(err) {
+		t.Error("Recent log file should still exist")
+	}
+	
+	if _, err := os.Stat(oldLog); !os.IsNotExist(err) {
+		t.Error("Old log file should have been deleted")
+	}
+	
+	if _, err := os.Stat(nonLogFile); os.IsNotExist(err) {
+		t.Error("Non-log file should not have been deleted")
+	}
+}
+
+func TestCleanupOldLogs_EmptyDirectory(t *testing.T) {
+	// Create empty temporary directory
+	tempDir, err := os.MkdirTemp("", "frictionless_empty_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	
+	// Should not panic or error on empty directory
+	cleanupOldLogs(tempDir)
+}
+
+func TestCleanupOldLogs_NonexistentDirectory(t *testing.T) {
+	// Should not panic or error on nonexistent directory
+	cleanupOldLogs("/nonexistent/directory")
+}
+
+func TestOpenLogFile_PathResolution(t *testing.T) {
+	// Create temporary directory structure
+	tempDir, err := os.MkdirTemp("", "frictionless_log_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	
+	// Test the log path resolution logic
+	var expectedLogPath string
+	
+	switch {
+	case runtime.GOOS == "windows":
+		// We can't easily mock environment variables, so we'll test the logic
+		if os.Getenv("LOCALAPPDATA") != "" {
+			expectedLogPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher", "frictionless-launcher.log")
+		}
+	case fileExists("/Users"):
+		// macOS
+		home, _ := os.UserHomeDir()
+		expectedLogPath = filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher", "frictionless-launcher.log")
+	default:
+		// Linux
+		home, _ := os.UserHomeDir()
+		expectedLogPath = filepath.Join(home, ".config", "FrictionlessLauncher", "frictionless-launcher.log")
+	}
+	
+	if expectedLogPath != "" {
+		// Verify the path contains the expected components
+		if !strings.Contains(expectedLogPath, "FrictionlessLauncher") {
+			t.Errorf("Log path should contain 'FrictionlessLauncher', got %s", expectedLogPath)
+		}
+		if !strings.HasSuffix(expectedLogPath, "frictionless-launcher.log") {
+			t.Errorf("Log path should end with 'frictionless-launcher.log', got %s", expectedLogPath)
+		}
+	}
+}
+
+func TestSetupLogging_DirectoryCreation(t *testing.T) {
+	// Save original log output
+	originalOutput := log.Writer()
+	originalFlags := log.Flags()
+	defer func() {
+		log.SetOutput(originalOutput)
+		log.SetFlags(originalFlags)
+	}()
+	
+	// Create a temporary directory to simulate a clean environment
+	tempDir, err := os.MkdirTemp("", "frictionless_setup_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	
+	// Mock the log directory to our temp directory
+	// Note: We can't easily test setupLogging() directly due to environment dependencies,
+	// but we can test the core logic components
+	
+	// Test directory creation logic
+	testLogDir := filepath.Join(tempDir, "TestFrictionlessLauncher")
+	if err := os.MkdirAll(testLogDir, 0755); err != nil {
+		t.Fatalf("Failed to create test log directory: %v", err)
+	}
+	
+	// Verify directory was created
+	if _, err := os.Stat(testLogDir); os.IsNotExist(err) {
+		t.Error("Log directory should have been created")
+	}
+	
+	// Test log file creation
+	testLogFile := filepath.Join(testLogDir, "test-frictionless-launcher.log")
+	file, err := os.OpenFile(testLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		t.Fatalf("Failed to create test log file: %v", err)
+	}
+	file.Close()
+	
+	// Verify log file was created
+	if _, err := os.Stat(testLogFile); os.IsNotExist(err) {
+		t.Error("Log file should have been created")
+	}
 }

@@ -2,11 +2,11 @@ package main
 
 import (
 	_ "embed"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -35,6 +35,9 @@ type App struct {
 }
 
 func main() {
+	// Set up logging to file
+	setupLogging()
+
 	app := &App{
 		configPath:    getConfigPath(),
 		launchPending: false,
@@ -73,7 +76,8 @@ func (app *App) onReady() {
 
 	systray.AddSeparator()
 
-	about := systray.AddMenuItem("Edit Config", "Open config.yaml in default editor")
+	editConfig := systray.AddMenuItem("Edit", "Open config.yaml in default editor")
+	openLogs := systray.AddMenuItem("Log", "Open log file in default editor")
 	quit := systray.AddMenuItem("Exit", "Exit Frictionless Launcher")
 
 	// Update toggle text based on current state
@@ -88,20 +92,23 @@ func (app *App) onReady() {
 
 			case <-toggleEnabled.ClickedCh:
 				app.config.Enabled = !app.config.Enabled
-				fmt.Printf("DEBUG: Toggled enabled to %v, launchPending: %v\n", app.config.Enabled, app.launchPending)
+				log.Printf("Toggled enabled to %v, launchPending: %v", app.config.Enabled, app.launchPending)
 
 				// Set atomic cancel flag if disabling during launch
 				if !app.config.Enabled && app.launchPending {
 					atomic.StoreInt32(&app.shouldCancel, 1)
-					fmt.Println("🚨 DEBUG: Set shouldCancel flag to 1 - goroutine should see this!")
+					log.Println("Set shouldCancel flag to 1 - goroutine should see this")
 				}
 
 				app.saveConfig()
 				app.updateToggleMenuItem(toggleEnabled)
 				app.updateTrayIcon()
 
-			case <-about.ClickedCh:
+			case <-editConfig.ClickedCh:
 				app.openConfigFile()
+
+			case <-openLogs.ClickedCh:
+				app.openLogFile()
 
 			case <-quit.ClickedCh:
 				systray.Quit()
@@ -127,7 +134,7 @@ func (app *App) loadConfig() {
 	}
 
 	if _, err := os.Stat(app.configPath); os.IsNotExist(err) {
-		fmt.Println("No config found, creating default config.yaml")
+		log.Println("No config found, creating default config.yaml")
 		app.saveConfig()
 		return
 	}
@@ -135,18 +142,17 @@ func (app *App) loadConfig() {
 	data, err := os.ReadFile(app.configPath)
 	if err != nil {
 		log.Printf("Error reading config: %v", err)
-		fmt.Println("Using default config due to read error")
+		log.Println("Using default config due to read error")
 		return
 	}
 
 	if err := yaml.Unmarshal(data, app.config); err != nil {
 		log.Printf("Error parsing config: %v", err)
-		fmt.Println("Config file has invalid YAML, using defaults")
-		fmt.Println("Please check your config.yaml file for syntax errors")
+		log.Println("Config file has invalid YAML, using defaults - please check your config.yaml file for syntax errors")
 		return
 	}
 
-	fmt.Printf("Loaded config: %s\n", app.config.GameName)
+	log.Printf("Loaded config: %s", app.config.GameName)
 }
 
 func (app *App) saveConfig() {
@@ -195,19 +201,19 @@ func (app *App) autoLaunchGame() {
 		atomic.StoreInt32(&app.shouldCancel, 0) // Reset flag
 	}()
 
-	fmt.Printf("Auto-launching %s in %d seconds...\n", app.config.GameName, app.config.BootDelay)
+	log.Printf("Auto-launching %s in %d seconds", app.config.GameName, app.config.BootDelay)
 
 	// Countdown checking atomic flag every 100ms for responsiveness
 	for i := 0; i < app.config.BootDelay*10; i++ {
 		if i%10 == 0 { // Print countdown every second
 			cancelFlag := atomic.LoadInt32(&app.shouldCancel)
-			fmt.Printf("Countdown: %d seconds remaining, shouldCancel=%d\n", app.config.BootDelay-(i/10), cancelFlag)
+			log.Printf("Countdown: %d seconds remaining, shouldCancel=%d", app.config.BootDelay-(i/10), cancelFlag)
 		}
 
 		// Check atomic cancel flag every 100ms
 		cancelFlag := atomic.LoadInt32(&app.shouldCancel)
 		if cancelFlag == 1 {
-			fmt.Println("✅ CANCELLED! shouldCancel flag was set to 1")
+			log.Println("CANCELLED - shouldCancel flag was set to 1")
 			return
 		}
 
@@ -217,21 +223,21 @@ func (app *App) autoLaunchGame() {
 	// Final check before launching
 	finalFlag := atomic.LoadInt32(&app.shouldCancel)
 	if finalFlag == 1 {
-		fmt.Println("✅ CANCELLED! shouldCancel flag was 1 at final check")
+		log.Println("CANCELLED - shouldCancel flag was 1 at final check")
 		return
 	}
 
-	fmt.Println("Proceeding with launch...")
+	log.Println("Proceeding with launch")
 	app.launchGame()
 }
 
 func (app *App) launchGame() {
 	if app.config.GamePath == "" {
-		fmt.Println("No game configured")
+		log.Println("No game configured")
 		return
 	}
 
-	fmt.Printf("Launching %s...\n", app.config.GameName)
+	log.Printf("Launching %s", app.config.GameName)
 
 	var cmd *exec.Cmd
 	if app.config.LaunchArgs != "" {
@@ -247,7 +253,7 @@ func (app *App) launchGame() {
 		return
 	}
 
-	fmt.Printf("%s launched successfully\n", app.config.GameName)
+	log.Printf("%s launched successfully", app.config.GameName)
 }
 
 func (app *App) updateToggleMenuItem(item *systray.MenuItem) {
@@ -277,7 +283,7 @@ func (app *App) openConfigFile() {
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		fmt.Printf("Config file not found: %s\n", configPath)
+		log.Printf("Config file not found: %s", configPath)
 		return
 	}
 
@@ -285,9 +291,9 @@ func (app *App) openConfigFile() {
 	var cmd *exec.Cmd
 
 	switch {
-	case strings.Contains(strings.ToLower(os.Getenv("OS")), "windows"):
-		// Windows: use start command
-		cmd = exec.Command("cmd", "/c", "start", configPath)
+	case runtime.GOOS == "windows":
+		// Windows: use start command (brief console flash is unavoidable in cross-platform builds)
+		cmd = exec.Command("cmd", "/c", "start", "", configPath)
 	case fileExists("/usr/bin/open"):
 		// macOS: use open command
 		cmd = exec.Command("open", configPath)
@@ -297,10 +303,56 @@ func (app *App) openConfigFile() {
 	}
 
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("Error opening config file: %v\n", err)
-		fmt.Printf("Config file location: %s\n", configPath)
+		log.Printf("Error opening config file: %v (location: %s)", err, configPath)
 	} else {
-		fmt.Printf("Opened config file: %s\n", configPath)
+		log.Printf("Opened config file: %s", configPath)
+	}
+}
+
+func (app *App) openLogFile() {
+	// Get log file path (same logic as setupLogging)
+	var logDir string
+
+	switch {
+	case runtime.GOOS == "windows":
+		logDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher")
+	case fileExists("/Users"):
+		// macOS
+		home, _ := os.UserHomeDir()
+		logDir = filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher")
+	default:
+		// Linux
+		home, _ := os.UserHomeDir()
+		logDir = filepath.Join(home, ".config", "FrictionlessLauncher")
+	}
+
+	logPath := filepath.Join(logDir, "frictionless-launcher.log")
+
+	// Check if log file exists
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		log.Printf("Log file not found: %s", logPath)
+		return
+	}
+
+	// Open with default program based on OS
+	var cmd *exec.Cmd
+
+	switch {
+	case runtime.GOOS == "windows":
+		// Windows: use start command (brief console flash is unavoidable in cross-platform builds)
+		cmd = exec.Command("cmd", "/c", "start", "", logPath)
+	case fileExists("/usr/bin/open"):
+		// macOS: use open command
+		cmd = exec.Command("open", logPath)
+	default:
+		// Linux: use xdg-open
+		cmd = exec.Command("xdg-open", logPath)
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("Error opening log file: %v (location: %s)", err, logPath)
+	} else {
+		log.Printf("Opened log file: %s", logPath)
 	}
 }
 
@@ -350,10 +402,86 @@ func getConfigPath() string {
 
 	// Create config directory if it doesn't exist
 	if err := os.MkdirAll(configDir, 0755); err != nil {
-		fmt.Printf("Warning: Could not create config directory %s: %v\n", configDir, err)
+		log.Printf("Warning: Could not create config directory %s: %v", configDir, err)
 		// Fall back to local directory
 		return localConfig
 	}
 
 	return filepath.Join(configDir, "config.yaml")
+}
+
+func setupLogging() {
+	// Get log directory (same logic as config directory)
+	var logDir string
+
+	switch {
+	case runtime.GOOS == "windows":
+		logDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher")
+	case fileExists("/Users"):
+		// macOS
+		home, _ := os.UserHomeDir()
+		logDir = filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher")
+	default:
+		// Linux
+		home, _ := os.UserHomeDir()
+		logDir = filepath.Join(home, ".config", "FrictionlessLauncher")
+	}
+
+	// Create log directory if it doesn't exist
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		// If we can't create log directory, just use default logger (stderr)
+		log.Printf("Warning: Could not create log directory %s: %v", logDir, err)
+		return
+	}
+
+	// Create log file
+	logFile := filepath.Join(logDir, "frictionless-launcher.log")
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Printf("Warning: Could not open log file %s: %v", logFile, err)
+		return
+	}
+
+	// Clean up old log files before setting up new logging
+	cleanupOldLogs(logDir)
+	
+	// Set log output to file with timestamp
+	log.SetOutput(file)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Printf("=== Frictionless Launcher started ===")
+}
+
+func cleanupOldLogs(logDir string) {
+	// Find all log files in the directory
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		// Directory doesn't exist or can't be read, nothing to clean up
+		return
+	}
+	
+	// Calculate cutoff time (1 week ago)
+	oneWeekAgo := time.Now().AddDate(0, 0, -7)
+	
+	for _, entry := range entries {
+		// Only process .log files
+		if !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		
+		filePath := filepath.Join(logDir, entry.Name())
+		
+		// Get file info to check modification time
+		info, err := entry.Info()
+		if err != nil {
+			continue // Skip files we can't get info for
+		}
+		
+		// Delete files older than 1 week
+		if info.ModTime().Before(oneWeekAgo) {
+			if err := os.Remove(filePath); err != nil {
+				// Don't log this error since logging isn't set up yet
+				continue
+			}
+		}
+	}
 }
