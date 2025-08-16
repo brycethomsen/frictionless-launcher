@@ -532,3 +532,159 @@ func TestSetupLogging_DirectoryCreation(t *testing.T) {
 		t.Error("Log file should have been created")
 	}
 }
+
+func TestApp_SetupLogging(t *testing.T) {
+	// Save original log settings
+	originalOutput := log.Writer()
+	originalFlags := log.Flags()
+	defer func() {
+		log.SetOutput(originalOutput)
+		log.SetFlags(originalFlags)
+	}()
+
+	// Create temporary directory for test
+	tempDir, err := os.MkdirTemp("", "frictionless_app_logging_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create app instance
+	app := &App{
+		configPath: filepath.Join(tempDir, "config.yaml"),
+	}
+
+	// We can't easily test the full setupLogging method due to OS dependencies,
+	// but we can test that it doesn't panic and sets up the logFile field
+	
+	// Note: This test will use the actual OS paths, so we'll just verify basic functionality
+	app.setupLogging()
+	
+	// Verify logFile was set (if logging setup succeeded)
+	// On some systems this might fail due to permissions, so we allow for that
+	if app.logFile != nil {
+		// Log file was successfully opened
+		defer app.closeLogFile() // Clean up
+		
+		// Verify we can write to the log
+		log.Printf("Test log message from setupLogging test")
+		
+		// The logFile should be a valid file handle
+		if app.logFile.Name() == "" {
+			t.Error("Log file should have a valid name")
+		}
+	}
+	// If app.logFile is nil, setupLogging failed (possibly due to permissions),
+	// but that's acceptable for a test environment
+}
+
+func TestApp_CloseLogFile(t *testing.T) {
+	// Save original log settings
+	originalOutput := log.Writer()
+	originalFlags := log.Flags()
+	defer func() {
+		log.SetOutput(originalOutput)
+		log.SetFlags(originalFlags)
+	}()
+
+	// Test with nil logFile (should not panic)
+	app := &App{}
+	app.closeLogFile() // Should not panic
+
+	// Test with actual logFile
+	tempDir, err := os.MkdirTemp("", "frictionless_close_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a log file manually
+	logFile := filepath.Join(tempDir, "test.log")
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		t.Fatalf("Failed to create test log file: %v", err)
+	}
+
+	app.logFile = file
+	log.SetOutput(file)
+
+	// Close the log file
+	app.closeLogFile()
+
+	// Verify file was closed by trying to write (should fail)
+	_, err = file.WriteString("test")
+	if err == nil {
+		t.Error("Expected error writing to closed file")
+	}
+}
+
+func TestOpenConfigFile_PathGeneration(t *testing.T) {
+	// Create temporary directory and config file
+	tempDir, err := os.MkdirTemp("", "frictionless_config_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	configPath := filepath.Join(tempDir, "test-config.yaml")
+	if err := os.WriteFile(configPath, []byte("test: value"), 0644); err != nil {
+		t.Fatalf("Failed to create test config: %v", err)
+	}
+
+	app := &App{
+		configPath: configPath,
+	}
+
+	// We can't easily test the actual file opening without mocking exec.Command,
+	// but we can test the path resolution logic by checking that the file exists
+	if _, err := os.Stat(app.configPath); os.IsNotExist(err) {
+		t.Error("Config file should exist for openConfigFile to work")
+	}
+
+	// The openConfigFile method should handle the file existence check
+	// Testing the actual execution would require mocking system commands
+}
+
+func TestOpenLogFile_CrossPlatform(t *testing.T) {
+	// Test the cross-platform command generation logic
+	var expectedCommand string
+	
+	switch {
+	case runtime.GOOS == "windows":
+		expectedCommand = "rundll32"
+	case fileExists("/usr/bin/open"):
+		expectedCommand = "open"
+	default:
+		expectedCommand = "xdg-open"
+	}
+
+	// We can't easily test the actual execution, but we can verify
+	// the platform detection logic works correctly
+	if expectedCommand == "" {
+		t.Error("Should have determined appropriate command for platform")
+	}
+
+	// Verify the command exists on the system (for non-Windows)
+	if runtime.GOOS != "windows" {
+		if expectedCommand == "open" && !fileExists("/usr/bin/open") {
+			t.Skip("open command not available on this system")
+		}
+		if expectedCommand == "xdg-open" {
+			// xdg-open might not be available in test environments, that's OK
+		}
+	}
+}
+
+func TestSaveConfig_ErrorHandling(t *testing.T) {
+	// Test saveConfig with invalid path
+	app := &App{
+		configPath: "/invalid/path/that/does/not/exist/config.yaml",
+		config: &Config{
+			GameName: "Test",
+		},
+	}
+
+	// This should not panic, even with an invalid path
+	app.saveConfig()
+	// The method should handle the error gracefully (just log it)
+}

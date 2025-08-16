@@ -32,16 +32,18 @@ type App struct {
 	configPath    string
 	launchPending bool
 	shouldCancel  int32 // Atomic flag: 1 = cancel, 0 = continue
+	logFile       *os.File // Log file handle for proper cleanup
 }
 
 func main() {
-	// Set up logging to file
-	setupLogging()
-
 	app := &App{
 		configPath:    getConfigPath(),
 		launchPending: false,
 	}
+	
+	// Set up logging to file and store handle in app
+	app.setupLogging()
+	defer app.closeLogFile() // Ensure log file is closed on exit
 
 	app.loadConfig()
 
@@ -412,7 +414,7 @@ func getConfigPath() string {
 	return filepath.Join(configDir, "config.yaml")
 }
 
-func setupLogging() {
+func (app *App) setupLogging() {
 	// Get log directory (same logic as config directory)
 	var logDir string
 
@@ -437,12 +439,15 @@ func setupLogging() {
 	}
 
 	// Create log file
-	logFile := filepath.Join(logDir, "frictionless-launcher.log")
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFilePath := filepath.Join(logDir, "frictionless-launcher.log")
+	file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
-		log.Printf("Warning: Could not open log file %s: %v", logFile, err)
+		log.Printf("Warning: Could not open log file %s: %v", logFilePath, err)
 		return
 	}
+
+	// Store file handle in app for proper cleanup
+	app.logFile = file
 
 	// Clean up old log files before setting up new logging
 	cleanupOldLogs(logDir)
@@ -485,5 +490,12 @@ func cleanupOldLogs(logDir string) {
 				continue
 			}
 		}
+	}
+}
+
+func (app *App) closeLogFile() {
+	if app.logFile != nil {
+		log.Printf("=== Frictionless Launcher shutting down ===")
+		app.logFile.Close()
 	}
 }
