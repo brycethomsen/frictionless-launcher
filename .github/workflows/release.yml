@@ -33,7 +33,7 @@ jobs:
           mkdir -p dist
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/Frictionless-Launcher-linux-amd64 .
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: linux-binaries
           path: dist/
@@ -57,7 +57,7 @@ jobs:
           $env:CGO_ENABLED=1; $env:GOOS="windows"; $env:GOARCH="amd64"; go build -ldflags="-s -w -H windowsgui" -o dist/Frictionless-Launcher-windows-amd64.exe .
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-binaries
           path: dist/
@@ -82,7 +82,7 @@ jobs:
           CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/Frictionless-Launcher-darwin-arm64 .
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: macos-binaries
           path: dist/
