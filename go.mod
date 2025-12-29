@@ -3,7 +3,7 @@ module frictionless-launcher
 go 1.24.5
 
 require (
-	fyne.io/systray v1.11.0
+	fyne.io/systray v1.12.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
