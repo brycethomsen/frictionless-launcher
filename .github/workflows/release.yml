@@ -30,12 +30,25 @@ jobs:
       - name: Install Fyne Linux build dependencies
         run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev
 
-      - name: Build linux binaries
+      - name: Install goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: latest
-          args: build --id linux --clean
+          install-only: true
+
+      # --snapshot is required on non-tag-push runs (e.g. workflow_dispatch
+      # dev builds): goreleaser build otherwise requires HEAD to be exactly
+      # at a release tag, which isn't true when testing from a branch.
+      - name: Build linux binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          args="build --id linux --clean"
+          if [ "${{ github.event_name }}" != "push" ]; then
+            args="$args --snapshot"
+          fi
+          goreleaser $args
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
@@ -59,12 +72,22 @@ jobs:
       - name: Install MinGW
         run: choco install mingw -y
 
-      - name: Build windows binaries
+      - name: Install goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: latest
-          args: build --id windows --clean
+          install-only: true
+
+      - name: Build windows binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          args="build --id windows --clean"
+          if [ "${{ github.event_name }}" != "push" ]; then
+            args="$args --snapshot"
+          fi
+          goreleaser $args
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
@@ -85,12 +108,22 @@ jobs:
         with:
           go-version: '1.26'
 
-      - name: Build darwin binaries
+      - name: Install goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: latest
-          args: build --id darwin --clean
+          install-only: true
+
+      - name: Build darwin binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          args="build --id darwin --clean"
+          if [ "${{ github.event_name }}" != "push" ]; then
+            args="$args --snapshot"
+          fi
+          goreleaser $args
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
