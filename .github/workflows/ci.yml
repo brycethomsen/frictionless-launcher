@@ -22,7 +22,7 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Windows Defender's real-time scanning makes Go/cgo builds dramatically
       # slower on windows-latest (every module file, every object file gets
@@ -34,7 +34,7 @@ jobs:
         run: Set-MpPreference -DisableRealtimeMonitoring $true
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26'
 
@@ -73,7 +73,7 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: meta
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
