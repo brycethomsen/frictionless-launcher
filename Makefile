@@ -85,15 +85,17 @@ mac-arm:
 	@echo "Build successful! Created $(BINARY_NAME)-darwin-arm64"
 
 # Windows x86_64 (no console window)
+# Requires a Windows C cross-compiler for cgo (Fyne needs cgo for OpenGL/GLFW):
+#   macOS:  brew install mingw-w64
 windows:
 	@echo Building for Windows x86_64...
-	GOOS=windows GOARCH=amd64 go build -ldflags="-H windowsgui" -o $(BINARY_NAME)-windows-amd64.exe .
+	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -ldflags="-H windowsgui" -o $(BINARY_NAME)-windows-amd64.exe .
 	@echo Build successful! Created $(BINARY_NAME)-windows-amd64.exe
 
 # Windows x86_64 (with console for debugging)
 windows-dev:
 	@echo Building Windows development version with console...
-	GOOS=windows GOARCH=amd64 go build -o $(BINARY_NAME)-windows-amd64-dev.exe .
+	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -o $(BINARY_NAME)-windows-amd64-dev.exe .
 	@echo Development build complete! Created $(BINARY_NAME)-windows-amd64-dev.exe
 
 # Linux x86_64 (for SteamOS/Steam Deck)

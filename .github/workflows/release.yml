@@ -4,12 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+  # Lets this run on-demand from any branch (Actions tab, or
+  # `gh workflow run release.yml --ref <branch>`) to test the full pipeline
+  # without pushing a real tag. See the "Create GitHub Release" step below —
+  # dispatch runs always create a draft, tag pushes always create the real thing.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to release (leave empty for snapshot)'
-        required: false
-        type: string
 
 permissions:
   contents: write
@@ -26,17 +25,23 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
-      - name: Build Linux binaries
-        run: |
-          mkdir -p dist
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/Frictionless-Launcher-linux-amd64 .
-      - name: Upload Linux artifacts
+      - name: Install Fyne Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev
+
+      - name: Build linux binaries
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: build --id linux --clean
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: linux-binaries
-          path: dist/
+          name: dist-linux
+          path: dist/*
 
   build-windows:
     runs-on: windows-latest
@@ -49,20 +54,25 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
-      - name: Build Windows binaries
-        run: |
-          mkdir dist
-          $env:CGO_ENABLED=1; $env:GOOS="windows"; $env:GOARCH="amd64"; go build -ldflags="-s -w -H windowsgui" -o dist/Frictionless-Launcher-windows-amd64.exe .
+      - name: Install MinGW
+        run: choco install mingw -y
 
-      - name: Upload Windows artifacts
+      - name: Build windows binaries
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: build --id windows --clean
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: windows-binaries
-          path: dist/
+          name: dist-windows
+          path: dist/*
 
-  build-macos:
+  build-darwin:
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -73,57 +83,82 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
-      - name: Build macOS binaries
-        run: |
-          mkdir -p dist
-          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/Frictionless-Launcher-darwin-amd64 .
-          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/Frictionless-Launcher-darwin-arm64 .
+      - name: Build darwin binaries
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: build --id darwin --clean
 
-      - name: Upload macOS artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: macos-binaries
-          path: dist/
+          name: dist-darwin
+          path: dist/*
 
-  create-release:
-    needs: [build-linux, build-windows, build-macos]
+  release:
+    needs: [build-linux, build-windows, build-darwin]
     runs-on: ubuntu-latest
-    if: github.event.inputs.tag || startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
-      - name: Download all artifacts
+      # goreleaser's `release` command has no OSS way to skip rebuilding and
+      # package pre-built binaries instead (that's a Pro-only feature), so
+      # this job packages the artifacts from the three native build jobs
+      # directly rather than invoking goreleaser again.
+      - name: Download all build artifacts
         uses: actions/download-artifact@v7
         with:
-          path: artifacts
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
 
-      - name: Prepare release assets
+      - name: Package archives and checksums
         run: |
-          mkdir -p release-assets
-          # Copy all binaries to temp directory for archiving
-          find artifacts -name "Frictionless-Launcher-*" -exec cp {} . \;
-          
-          # Create archives directly in release-assets
-          tar -czf release-assets/Frictionless-Launcher-linux-amd64.tar.gz Frictionless-Launcher-linux-amd64
-          tar -czf release-assets/Frictionless-Launcher-darwin-amd64.tar.gz Frictionless-Launcher-darwin-amd64
-          tar -czf release-assets/Frictionless-Launcher-darwin-arm64.tar.gz Frictionless-Launcher-darwin-arm64
-          zip release-assets/Frictionless-Launcher-windows-amd64.zip Frictionless-Launcher-windows-amd64.exe
-          
-          # Generate checksums for archives only
-          cd release-assets
-          sha256sum *.tar.gz *.zip > checksums.txt
+          set -euo pipefail
+          mkdir -p release
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: Frictionless Launcher ${{ github.event.inputs.tag || github.ref_name }}
-          draft: false
-          files: release-assets/*
+          linux_bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*linux*' | head -1)
+          darwin_bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*darwin_all*' | head -1)
+          windows_bin=$(find dist -type f -name 'Frictionless-Launcher.exe' -path '*windows*' | head -1)
+
+          if [ -z "$linux_bin" ] || [ -z "$darwin_bin" ] || [ -z "$windows_bin" ]; then
+            echo "missing an expected build artifact:"
+            echo "  linux:   ${linux_bin:-MISSING}"
+            echo "  darwin:  ${darwin_bin:-MISSING}"
+            echo "  windows: ${windows_bin:-MISSING}"
+            find dist -type f
+            exit 1
+          fi
+
+          tar -C "$(dirname "$linux_bin")" -czf release/Frictionless-Launcher_Linux_x86_64.tar.gz Frictionless-Launcher
+          tar -C "$(dirname "$darwin_bin")" -czf release/Frictionless-Launcher_Darwin_universal.tar.gz Frictionless-Launcher
+          (cd "$(dirname "$windows_bin")" && zip -j "$GITHUB_WORKSPACE/release/Frictionless-Launcher_Windows_x86_64.zip" Frictionless-Launcher.exe)
+
+          cp README.md icon.ico release/
+
+          cd release && sha256sum *.tar.gz *.zip > checksums.txt
+
+      - name: Create GitHub Release
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --title "Frictionless Launcher $GITHUB_REF_NAME" \
+              --generate-notes
+          else
+            # Rolling dev build: one draft release, always tagged "dev", whose
+            # assets get replaced each run. Drafts are only visible to people
+            # with write access to the repo — never public.
+            gh release delete dev --cleanup-tag --yes || true
+            gh release create dev release/* \
+              --draft \
+              --title "Dev build ($(date -u +'%Y-%m-%d %H:%M UTC'))" \
+              --notes "Automated dev build from commit $GITHUB_SHA on branch $GITHUB_REF_NAME. Draft only — not a public release." \
+              --target "$GITHUB_SHA"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

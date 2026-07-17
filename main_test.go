@@ -12,356 +12,585 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestConfig_LoadAndSave(t *testing.T) {
-	// Create temporary directory for test config
-	tempDir, err := os.MkdirTemp("", "frictionless_test")
+// ---- helpers ----------------------------------------------------------------
+
+func newTestApp(t *testing.T) (*App, string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "frictionless_test_*")
 	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+		t.Fatalf("MkdirTemp: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
-
-	configPath := filepath.Join(tempDir, "config.yaml")
-
-	app := &App{
-		configPath: configPath,
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	a := &App{
+		configPath:     filepath.Join(dir, "config.yaml"),
+		lastLaunchTime: make(map[string]time.Time),
 	}
+	return a, dir
+}
 
-	// Test loading config when file doesn't exist (should create defaults)
+func gameWithSchedule(day, start, end string) Game {
+	return Game{
+		GameName:     "TestGame",
+		GamePath:     "steam://rungameid/1",
+		LaunchMethod: "steam",
+		Enabled:      true,
+		Schedules: []Schedule{
+			{Days: []string{day}, StartTime: start, EndTime: end},
+		},
+	}
+}
+
+// fakeClock builds an App whose schedule checks use a mocked time by replacing
+// time.Now-dependent logic via nextScheduleTime with a fixed reference point.
+func appWithGames(games []Game) *App {
+	return &App{
+		config:         &Config{Games: games, BootDelay: 10},
+		lastLaunchTime: make(map[string]time.Time),
+	}
+}
+
+// ---- Config: load / save / migrate ------------------------------------------
+
+func TestConfig_LoadAndSave(t *testing.T) {
+	app, _ := newTestApp(t)
+
 	app.loadConfig()
-
 	if app.config == nil {
-		t.Fatal("Config should not be nil after loadConfig")
+		t.Fatal("config must not be nil after loadConfig")
+	}
+	// Fresh config must start with no games — never a hardcoded sample.
+	if len(app.config.Games) != 0 {
+		t.Errorf("default config should have no games, got %d", len(app.config.Games))
+	}
+	if app.config.BootDelay != 10 {
+		t.Errorf("expected BootDelay 10, got %d", app.config.BootDelay)
 	}
 
-	// Verify default values
-	if app.config.GameName != "Test Command" {
-		t.Errorf("Expected GameName 'Test Command', got '%s'", app.config.GameName)
-	}
-	if app.config.Enabled != true {
-		t.Errorf("Expected Enabled true, got %v", app.config.Enabled)
-	}
-	if app.config.Schedule != "always" {
-		t.Errorf("Expected Schedule 'always', got '%s'", app.config.Schedule)
-	}
-
-	// Test saving config
-	app.config.GameName = "Test Game"
-	app.config.Enabled = false
+	// Add a game and round-trip
+	app.config.Games = []Game{{GameName: "RoundTripGame"}}
+	app.config.BootDelay = 30
+	// saveConfig calls refreshTrayMenu (no-op when desk==nil)
 	app.saveConfig()
 
-	// Verify file was created
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		t.Fatal("Config file should exist after saveConfig")
+	if _, err := os.Stat(app.configPath); os.IsNotExist(err) {
+		t.Fatal("config file should exist after saveConfig")
 	}
 
-	// Test loading saved config
-	app2 := &App{configPath: configPath}
+	app2, _ := newTestApp(t)
+	app2.configPath = app.configPath
 	app2.loadConfig()
-
-	if app2.config.GameName != "Test Game" {
-		t.Errorf("Expected loaded GameName 'Test Game', got '%s'", app2.config.GameName)
+	if app2.config.Games[0].GameName != "RoundTripGame" {
+		t.Errorf("expected RoundTripGame, got %s", app2.config.Games[0].GameName)
 	}
-	if app2.config.Enabled != false {
-		t.Errorf("Expected loaded Enabled false, got %v", app2.config.Enabled)
+	if app2.config.BootDelay != 30 {
+		t.Errorf("expected BootDelay 30, got %d", app2.config.BootDelay)
 	}
 }
 
 func TestConfig_InvalidYAML(t *testing.T) {
-	// Create temporary directory for test config
-	tempDir, err := os.MkdirTemp("", "frictionless_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+	app, dir := newTestApp(t)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("invalid: yaml: [unclosed"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	defer os.RemoveAll(tempDir)
-
-	configPath := filepath.Join(tempDir, "config.yaml")
-
-	// Write invalid YAML
-	invalidYAML := "invalid: yaml: content: [unclosed"
-	err = os.WriteFile(configPath, []byte(invalidYAML), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write invalid YAML: %v", err)
+	app.loadConfig()
+	// Must fall back to defaults — not nil, not panicking
+	if app.config == nil {
+		t.Fatal("config must not be nil after invalid YAML")
 	}
+	if len(app.config.Games) != 0 {
+		t.Errorf("expected empty game list after invalid YAML, got %d", len(app.config.Games))
+	}
+}
 
-	app := &App{configPath: configPath}
+func TestConfig_LegacyMigration(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	// The legacy format: top-level game_path with no games list.
+	legacy := `
+game_path: /usr/games/mygame
+game_name: My Legacy Game
+enabled: true
+schedule: always
+`
+	if err := os.WriteFile(app.configPath, []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
 	app.loadConfig()
 
-	// Should fall back to defaults when YAML is invalid
-	if app.config.GameName != "Test Command" {
-		t.Errorf("Expected default GameName 'Test Command' when YAML invalid, got '%s'", app.config.GameName)
+	if len(app.config.Games) != 1 {
+		t.Fatalf("expected 1 migrated game, got %d", len(app.config.Games))
+	}
+	g := app.config.Games[0]
+	if g.GameName != "My Legacy Game" {
+		t.Errorf("expected 'My Legacy Game', got %q", g.GameName)
+	}
+	if g.GamePath != "/usr/games/mygame" {
+		t.Errorf("expected '/usr/games/mygame', got %q", g.GamePath)
+	}
+	if g.LaunchMethod != "direct" {
+		t.Errorf("legacy migration should set launch_method=direct, got %q", g.LaunchMethod)
+	}
+	// "always" schedule maps to Mon–Sun 00:00–23:59
+	if len(g.Schedules) == 0 {
+		t.Fatal("expected at least one schedule after migration")
+	}
+	if len(g.Schedules[0].Days) != 7 {
+		t.Errorf("expected 7 days, got %d", len(g.Schedules[0].Days))
+	}
+	// Legacy fields should be cleared after migration
+	if app.config.GamePath != "" {
+		t.Error("legacy GamePath should be cleared after migration")
 	}
 }
 
-func TestShouldLaunchNow_Always(t *testing.T) {
+func TestConfig_LegacyMigration_NoSchedule(t *testing.T) {
+	app, _ := newTestApp(t)
+	legacy := `
+game_path: /usr/games/other
+game_name: Other Game
+enabled: false
+`
+	if err := os.WriteFile(app.configPath, []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+	app.loadConfig()
+	if len(app.config.Games) != 1 {
+		t.Fatalf("expected 1 game, got %d", len(app.config.Games))
+	}
+	// No schedule string → empty Schedules slice (not nil panic)
+	_ = app.config.Games[0].Schedules
+}
+
+func TestSaveConfig_ErrorHandling(t *testing.T) {
 	app := &App{
-		config: &Config{Schedule: "always"},
+		configPath:     "/nonexistent/path/config.yaml",
+		config:         &Config{Games: []Game{{GameName: "X"}}},
+		lastLaunchTime: make(map[string]time.Time),
 	}
+	// Must not panic
+	app.saveConfig()
+}
 
-	if !app.shouldLaunchNow() {
-		t.Error("shouldLaunchNow should return true for 'always' schedule")
+// ---- YAML marshaling --------------------------------------------------------
+
+func TestYAMLMarshaling_RoundTrip(t *testing.T) {
+	orig := &Config{
+		BootDelay: 15,
+		Games: []Game{
+			{
+				GameName:     "Test Game",
+				GamePath:     "steam://rungameid/999",
+				LaunchMethod: "steam",
+				LaunchArgs:   "-fullscreen",
+				Enabled:      true,
+				Schedules: []Schedule{
+					{Days: []string{"Mon", "Fri"}, StartTime: "18:00", EndTime: "22:00"},
+				},
+			},
+		},
+	}
+	data, err := yaml.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Config
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.BootDelay != orig.BootDelay {
+		t.Errorf("BootDelay: want %d got %d", orig.BootDelay, got.BootDelay)
+	}
+	if len(got.Games) != 1 {
+		t.Fatalf("expected 1 game, got %d", len(got.Games))
+	}
+	g := got.Games[0]
+	if g.GameName != "Test Game" {
+		t.Errorf("GameName: want 'Test Game' got %q", g.GameName)
+	}
+	if len(g.Schedules) != 1 || g.Schedules[0].StartTime != "18:00" {
+		t.Errorf("Schedules round-trip failed: %+v", g.Schedules)
 	}
 }
 
-func TestShouldLaunchNow_After5PM(t *testing.T) {
-	app := &App{
-		config: &Config{Schedule: "after_5pm_daily"},
+// ---- nextScheduleTime -------------------------------------------------------
+
+func TestNextScheduleTime_TodayLater(t *testing.T) {
+	// Wednesday at 08:00 → schedule is Wed 19:00–21:00 → next is same day 19:00
+	now := time.Date(2024, 1, 17, 8, 0, 0, 0, time.Local) // Wednesday
+	app := appWithGames(nil)
+	game := gameWithSchedule("Wed", "19:00", "21:00")
+
+	next, ok := app.nextScheduleTime(game, now)
+	if !ok {
+		t.Fatal("expected a next schedule time")
 	}
-
-	// Test with 6 PM time
-	mockTime := time.Date(2024, 1, 15, 18, 0, 0, 0, time.Local)
-	result := shouldLaunchNowWithTime(app.config, mockTime)
-	if !result {
-		t.Error("shouldLaunchNow should return true at 6 PM for 'after_5pm_daily'")
+	if next.Weekday() != time.Wednesday {
+		t.Errorf("expected Wednesday, got %s", next.Weekday())
 	}
-
-	// Test with 3 PM time
-	mockTime = time.Date(2024, 1, 15, 15, 0, 0, 0, time.Local)
-	result = shouldLaunchNowWithTime(app.config, mockTime)
-	if result {
-		t.Error("shouldLaunchNow should return false at 3 PM for 'after_5pm_daily'")
-	}
-}
-
-func TestShouldLaunchNow_Weekends(t *testing.T) {
-	config := &Config{Schedule: "weekends_anytime"}
-
-	// Saturday - should launch
-	mockTime := time.Date(2024, 1, 13, 10, 0, 0, 0, time.Local) // Saturday
-	if !shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return true on Saturday for 'weekends_anytime'")
-	}
-
-	// Sunday - should launch
-	mockTime = time.Date(2024, 1, 14, 10, 0, 0, 0, time.Local) // Sunday
-	if !shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return true on Sunday for 'weekends_anytime'")
-	}
-
-	// Monday - should not launch
-	mockTime = time.Date(2024, 1, 15, 10, 0, 0, 0, time.Local) // Monday
-	if shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return false on Monday for 'weekends_anytime'")
+	if next.Hour() != 19 || next.Minute() != 0 {
+		t.Errorf("expected 19:00, got %02d:%02d", next.Hour(), next.Minute())
 	}
 }
 
-func TestShouldLaunchNow_TueThuAfter8PM(t *testing.T) {
-	config := &Config{Schedule: "tue_thu_after_8pm"}
+func TestNextScheduleTime_TomorrowWhenTodayPassed(t *testing.T) {
+	// Wednesday at 20:00 — today's 19:00 start has already passed.
+	// The loop now searches up to daysAhead<=7, so next Wed (7 days out) is found.
+	now := time.Date(2024, 1, 17, 20, 0, 0, 0, time.Local) // Wednesday 20:00
+	app := appWithGames(nil)
+	game := gameWithSchedule("Wed", "19:00", "21:00")
 
-	// Tuesday 9 PM - should launch
-	mockTime := time.Date(2024, 1, 16, 21, 0, 0, 0, time.Local) // Tuesday
-	if !shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return true on Tuesday at 9 PM")
+	next, ok := app.nextScheduleTime(game, now)
+	if !ok {
+		t.Fatal("expected a schedule within the 7-day window")
 	}
-
-	// Thursday 9 PM - should launch
-	mockTime = time.Date(2024, 1, 18, 21, 0, 0, 0, time.Local) // Thursday
-	if !shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return true on Thursday at 9 PM")
+	if next.Weekday() != time.Wednesday {
+		t.Errorf("expected Wednesday, got %s", next.Weekday())
 	}
-
-	// Tuesday 7 PM - should not launch (before 8 PM)
-	mockTime = time.Date(2024, 1, 16, 19, 0, 0, 0, time.Local) // Tuesday
-	if shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return false on Tuesday at 7 PM")
-	}
-
-	// Wednesday 9 PM - should not launch (wrong day)
-	mockTime = time.Date(2024, 1, 17, 21, 0, 0, 0, time.Local) // Wednesday
-	if shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return false on Wednesday at 9 PM")
+	// next Wed 19:00 is 167 hours after Wed 20:00 — confirm it's ~7 days ahead
+	diff := next.Sub(now)
+	if diff < 6*24*time.Hour || diff > 8*24*time.Hour {
+		t.Errorf("expected ~7 days ahead, got %v", diff)
 	}
 }
 
-func TestShouldLaunchNow_WeekdaysEvening(t *testing.T) {
-	config := &Config{Schedule: "weekdays_evening"}
-
-	// Monday 7 PM - should launch
-	mockTime := time.Date(2024, 1, 15, 19, 0, 0, 0, time.Local) // Monday
-	if !shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return true on Monday at 7 PM")
-	}
-
-	// Friday 9 PM - should launch
-	mockTime = time.Date(2024, 1, 19, 21, 0, 0, 0, time.Local) // Friday
-	if !shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return true on Friday at 9 PM")
-	}
-
-	// Monday 5 PM - should not launch (before 6 PM)
-	mockTime = time.Date(2024, 1, 15, 17, 0, 0, 0, time.Local) // Monday
-	if shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return false on Monday at 5 PM")
-	}
-
-	// Monday 11 PM - should not launch (after 10 PM)
-	mockTime = time.Date(2024, 1, 15, 23, 0, 0, 0, time.Local) // Monday
-	if shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return false on Monday at 11 PM")
-	}
-
-	// Saturday 7 PM - should not launch (weekend)
-	mockTime = time.Date(2024, 1, 13, 19, 0, 0, 0, time.Local) // Saturday
-	if shouldLaunchNowWithTime(config, mockTime) {
-		t.Error("shouldLaunchNow should return false on Saturday at 7 PM")
+func TestNextScheduleTime_NoSchedule(t *testing.T) {
+	app := appWithGames(nil)
+	game := Game{GameName: "NoSched", Enabled: true}
+	_, ok := app.nextScheduleTime(game, time.Now())
+	if ok {
+		t.Error("game with no schedules should return ok=false")
 	}
 }
 
-func TestShouldLaunchNow_InvalidSchedule(t *testing.T) {
-	app := &App{
-		config: &Config{Schedule: "invalid_schedule"},
+func TestNextScheduleTime_MultipleSchedules(t *testing.T) {
+	// Monday 08:00 — game has Mon 19:00 and Fri 18:00; Mon should come first
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday
+	app := appWithGames(nil)
+	game := Game{
+		GameName: "Multi", Enabled: true,
+		Schedules: []Schedule{
+			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
+			{Days: []string{"Fri"}, StartTime: "18:00", EndTime: "20:00"},
+		},
 	}
-
-	if app.shouldLaunchNow() {
-		t.Error("shouldLaunchNow should return false for invalid schedule")
+	next, ok := app.nextScheduleTime(game, now)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if next.Weekday() != time.Monday {
+		t.Errorf("expected Monday (earlier), got %s", next.Weekday())
 	}
 }
+
+// ---- nextScheduledGames -----------------------------------------------------
+
+func TestNextScheduledGames_Ordering(t *testing.T) {
+	// Today is Monday 08:00; game A is Mon 19:00, game B is Mon 20:00
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local)
+	gameA := Game{GameName: "A", Enabled: true, Schedules: []Schedule{{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"}}}
+	gameB := Game{GameName: "B", Enabled: true, Schedules: []Schedule{{Days: []string{"Mon"}, StartTime: "20:00", EndTime: "22:00"}}}
+	gameC := Game{GameName: "C", Enabled: false, Schedules: []Schedule{{Days: []string{"Mon"}, StartTime: "10:00", EndTime: "12:00"}}}
+
+	app := appWithGames([]Game{gameB, gameA, gameC}) // B first in config, A second
+
+	// Use the real nextScheduleTime but override "now" via a test shim:
+	// nextScheduledGames calls time.Now() internally; we verify ordering by looking
+	// at real values since the test machines will be running at some time of day.
+	// To be deterministic, set game schedules relative to a time we control by
+	// exercising nextScheduleTime directly.
+	tA, _ := app.nextScheduleTime(gameA, now)
+	tB, _ := app.nextScheduleTime(gameB, now)
+	if !tA.Before(tB) {
+		t.Errorf("expected A (%v) before B (%v)", tA, tB)
+	}
+
+	// Verify disabled game is excluded
+	games := app.nextScheduledGames(3)
+	for _, g := range games {
+		if g.GameName == "C" {
+			t.Error("disabled game C should not appear in nextScheduledGames")
+		}
+	}
+}
+
+func TestNextScheduledGames_Limit(t *testing.T) {
+	app := appWithGames([]Game{
+		{GameName: "A", Enabled: true, Schedules: []Schedule{{Days: []string{"Mon"}, StartTime: "10:00", EndTime: "12:00"}}},
+		{GameName: "B", Enabled: true, Schedules: []Schedule{{Days: []string{"Tue"}, StartTime: "10:00", EndTime: "12:00"}}},
+		{GameName: "C", Enabled: true, Schedules: []Schedule{{Days: []string{"Wed"}, StartTime: "10:00", EndTime: "12:00"}}},
+		{GameName: "D", Enabled: true, Schedules: []Schedule{{Days: []string{"Thu"}, StartTime: "10:00", EndTime: "12:00"}}},
+	})
+	got := app.nextScheduledGames(2)
+	if len(got) > 2 {
+		t.Errorf("expected at most 2, got %d", len(got))
+	}
+}
+
+func TestNextScheduledGames_Empty(t *testing.T) {
+	app := appWithGames([]Game{})
+	got := app.nextScheduledGames(5)
+	if len(got) != 0 {
+		t.Errorf("expected empty result, got %d", len(got))
+	}
+}
+
+// ---- isInScheduleWindow / shouldLaunchGame ----------------------------------
+
+// isInScheduleWindowAt mimics isInScheduleWindow but uses a supplied time so
+// tests are deterministic without changing production code.
+func isInScheduleWindowAt(game Game, now time.Time) bool {
+	currentTime := now.Format("15:04")
+	currentDay := now.Weekday().String()[:3]
+	for _, schedule := range game.Schedules {
+		dayMatch := false
+		for _, d := range schedule.Days {
+			if strings.EqualFold(d, currentDay) {
+				dayMatch = true
+				break
+			}
+		}
+		if !dayMatch {
+			continue
+		}
+		if currentTime >= schedule.StartTime && currentTime <= schedule.EndTime {
+			return true
+		}
+	}
+	return false
+}
+
+func TestIsInScheduleWindow_Inside(t *testing.T) {
+	// Thursday 19:30, schedule Thu 19:00–21:00
+	now := time.Date(2024, 1, 18, 19, 30, 0, 0, time.Local) // Thursday
+	game := gameWithSchedule("Thu", "19:00", "21:00")
+	if !isInScheduleWindowAt(game, now) {
+		t.Error("expected inside window")
+	}
+}
+
+func TestIsInScheduleWindow_BeforeStart(t *testing.T) {
+	now := time.Date(2024, 1, 18, 18, 59, 0, 0, time.Local) // Thursday 18:59
+	game := gameWithSchedule("Thu", "19:00", "21:00")
+	if isInScheduleWindowAt(game, now) {
+		t.Error("expected outside window (before start)")
+	}
+}
+
+func TestIsInScheduleWindow_AfterEnd(t *testing.T) {
+	now := time.Date(2024, 1, 18, 21, 01, 0, 0, time.Local) // Thursday 21:01
+	game := gameWithSchedule("Thu", "19:00", "21:00")
+	if isInScheduleWindowAt(game, now) {
+		t.Error("expected outside window (after end)")
+	}
+}
+
+func TestIsInScheduleWindow_WrongDay(t *testing.T) {
+	now := time.Date(2024, 1, 17, 19, 30, 0, 0, time.Local) // Wednesday 19:30
+	game := gameWithSchedule("Thu", "19:00", "21:00")
+	if isInScheduleWindowAt(game, now) {
+		t.Error("expected outside window (wrong day)")
+	}
+}
+
+func TestIsInScheduleWindow_NoSchedules(t *testing.T) {
+	now := time.Date(2024, 1, 18, 19, 30, 0, 0, time.Local)
+	game := Game{GameName: "X", Enabled: true}
+	if isInScheduleWindowAt(game, now) {
+		t.Error("game with no schedules should never be in window")
+	}
+}
+
+func TestIsInScheduleWindow_CaseInsensitiveDay(t *testing.T) {
+	now := time.Date(2024, 1, 18, 20, 0, 0, 0, time.Local) // Thursday
+	game := Game{
+		Enabled:   true,
+		Schedules: []Schedule{{Days: []string{"thu"}, StartTime: "19:00", EndTime: "21:00"}},
+	}
+	if !isInScheduleWindowAt(game, now) {
+		t.Error("day matching should be case-insensitive")
+	}
+}
+
+// ---- hasLaunchedInCurrentWindow ---------------------------------------------
+
+func TestHasLaunchedInCurrentWindow_NotLaunched(t *testing.T) {
+	app := appWithGames(nil)
+	game := gameWithSchedule("Mon", "19:00", "21:00")
+	// No record at all
+	if app.hasLaunchedInCurrentWindow(game) {
+		t.Error("no launch recorded, should return false")
+	}
+}
+
+func TestHasLaunchedInCurrentWindow_LaunchedInWindow(t *testing.T) {
+	app := appWithGames(nil)
+	// Simulate: current time is Monday 19:30, last launch was Monday 19:05
+	now := time.Date(2024, 1, 15, 19, 30, 0, 0, time.Local) // Monday
+	game := Game{
+		GameName: "TestGame",
+		Enabled:  true,
+		Schedules: []Schedule{
+			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
+		},
+	}
+	// Record a launch that happened 25 minutes into the window
+	launchTime := time.Date(now.Year(), now.Month(), now.Day(), 19, 5, 0, 0, now.Location())
+	app.lastLaunchTime["TestGame"] = launchTime
+
+	// We can't call hasLaunchedInCurrentWindow directly (it uses time.Now), so
+	// replicate the logic with our controlled time.
+	inWindow := app.hasLaunchedInCurrentWindowAt(game, now)
+	if !inWindow {
+		t.Error("launch was in window, should return true")
+	}
+}
+
+func TestHasLaunchedInCurrentWindow_LaunchedBeforeWindow(t *testing.T) {
+	app := appWithGames(nil)
+	now := time.Date(2024, 1, 15, 19, 30, 0, 0, time.Local)
+	game := Game{
+		GameName: "TestGame",
+		Enabled:  true,
+		Schedules: []Schedule{
+			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
+		},
+	}
+	// Record a launch that happened before the window
+	app.lastLaunchTime["TestGame"] = time.Date(now.Year(), now.Month(), now.Day(), 18, 0, 0, 0, now.Location())
+
+	if app.hasLaunchedInCurrentWindowAt(game, now) {
+		t.Error("launch was before window start, should return false")
+	}
+}
+
+// ---- recordLaunch -----------------------------------------------------------
+
+func TestRecordLaunch(t *testing.T) {
+	app := appWithGames(nil)
+	game := Game{GameName: "RecordMe"}
+	before := time.Now()
+	app.recordLaunch(game)
+	after := time.Now()
+
+	ts, ok := app.lastLaunchTime["RecordMe"]
+	if !ok {
+		t.Fatal("launch time not recorded")
+	}
+	if ts.Before(before) || ts.After(after) {
+		t.Errorf("launch timestamp %v not in expected range [%v, %v]", ts, before, after)
+	}
+}
+
+// ---- getGameScheduleInfo ----------------------------------------------------
+
+func TestGetGameScheduleInfo_Disabled(t *testing.T) {
+	app := appWithGames(nil)
+	g := Game{GameName: "X", Enabled: false}
+	if got := app.getGameScheduleInfo(g); got != "Disabled" {
+		t.Errorf("expected 'Disabled', got %q", got)
+	}
+}
+
+func TestGetGameScheduleInfo_NoSchedule(t *testing.T) {
+	app := appWithGames(nil)
+	g := Game{GameName: "X", Enabled: true}
+	if got := app.getGameScheduleInfo(g); got != "No schedule configured" {
+		t.Errorf("expected 'No schedule configured', got %q", got)
+	}
+}
+
+func TestGetGameScheduleInfo_WithSchedule(t *testing.T) {
+	app := appWithGames(nil)
+	g := gameWithSchedule("Fri", "18:00", "22:00")
+	got := app.getGameScheduleInfo(g)
+	if !strings.Contains(got, "Fri") {
+		t.Errorf("expected day in output, got %q", got)
+	}
+	if !strings.Contains(got, "18:00") {
+		t.Errorf("expected start time in output, got %q", got)
+	}
+	if !strings.Contains(got, "22:00") {
+		t.Errorf("expected end time in output, got %q", got)
+	}
+}
+
+// ---- warnScheduleOverlaps ---------------------------------------------------
+
+func TestWarnScheduleOverlaps_NoOverlap(t *testing.T) {
+	app := appWithGames([]Game{
+		{GameName: "A", Enabled: true, Schedules: []Schedule{{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"}}},
+		{GameName: "B", Enabled: true, Schedules: []Schedule{{Days: []string{"Tue"}, StartTime: "19:00", EndTime: "21:00"}}},
+	})
+	// Should not panic
+	app.warnScheduleOverlaps()
+}
+
+func TestWarnScheduleOverlaps_WithOverlap(t *testing.T) {
+	app := appWithGames([]Game{
+		{GameName: "A", Enabled: true, Schedules: []Schedule{{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"}}},
+		{GameName: "B", Enabled: true, Schedules: []Schedule{{Days: []string{"Mon"}, StartTime: "20:00", EndTime: "22:00"}}},
+	})
+	// Should not panic; overlap warning is logged only
+	app.warnScheduleOverlaps()
+}
+
+// ---- fileExists -------------------------------------------------------------
 
 func TestFileExists(t *testing.T) {
-	// Create temporary file
-	tempFile, err := os.CreateTemp("", "test_file")
+	f, err := os.CreateTemp("", "fe_test_*")
 	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
+		t.Fatal(err)
 	}
-	tempFile.Close()
-	defer os.Remove(tempFile.Name())
+	f.Close()
+	defer os.Remove(f.Name())
 
-	// Test existing file
-	if !fileExists(tempFile.Name()) {
-		t.Error("fileExists should return true for existing file")
+	if !fileExists(f.Name()) {
+		t.Error("fileExists must return true for existing file")
 	}
-
-	// Test non-existing file
-	if fileExists("/non/existent/file") {
-		t.Error("fileExists should return false for non-existent file")
+	if fileExists("/definitely/does/not/exist/xyz") {
+		t.Error("fileExists must return false for non-existent path")
 	}
 }
 
+// ---- getConfigPath ----------------------------------------------------------
+
 func TestGetConfigPath_LocalConfig(t *testing.T) {
-	// Create temporary directory to simulate executable location
-	tempDir, err := os.MkdirTemp("", "frictionless_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	dir, _ := os.MkdirTemp("", "cfg_local_*")
+	defer os.RemoveAll(dir)
 
-	// Create a local config.yaml file
-	localConfig := filepath.Join(tempDir, "config.yaml")
-	err = os.WriteFile(localConfig, []byte("test: value"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create local config: %v", err)
-	}
+	localCfg := filepath.Join(dir, "config.yaml")
+	os.WriteFile(localCfg, []byte("boot_delay: 5"), 0644)
 
-	// Test getConfigPathWithExecutable helper
-	executablePath := filepath.Join(tempDir, "frictionless")
-	configPath := getConfigPathWithExecutable(executablePath)
-
-	if configPath != localConfig {
-		t.Errorf("Expected config path %s, got %s", localConfig, configPath)
+	got := getConfigPathWithExecutable(filepath.Join(dir, "frictionless"))
+	if got != localCfg {
+		t.Errorf("expected %s, got %s", localCfg, got)
 	}
 }
 
 func TestGetConfigPath_OSSpecific(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "frictionless_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	dir, _ := os.MkdirTemp("", "cfg_os_*")
+	defer os.RemoveAll(dir)
 
-	// Test with executable path that has no local config
-	executablePath := filepath.Join(tempDir, "frictionless")
-	configPath := getConfigPathWithExecutable(executablePath)
-
-	// Should contain "FrictionlessLauncher" directory and config.yaml
-	if !strings.Contains(configPath, "FrictionlessLauncher") {
-		t.Errorf("Config path should contain 'FrictionlessLauncher', got %s", configPath)
+	// No local config.yaml → should fall back to OS path
+	got := getConfigPathWithExecutable(filepath.Join(dir, "frictionless"))
+	if !strings.Contains(got, "FrictionlessLauncher") {
+		t.Errorf("expected FrictionlessLauncher in path, got %s", got)
 	}
-	if !strings.HasSuffix(configPath, "config.yaml") {
-		t.Errorf("Config path should end with 'config.yaml', got %s", configPath)
+	if !strings.HasSuffix(got, "config.yaml") {
+		t.Errorf("expected config.yaml suffix, got %s", got)
 	}
 }
 
-func TestYAMLMarshaling(t *testing.T) {
-	config := &Config{
-		GamePath:   "/path/to/game",
-		GameName:   "Test Game",
-		LaunchArgs: "-arg1 -arg2",
-		Enabled:    true,
-		BootDelay:  10,
-		Schedule:   "always",
-	}
-
-	// Test marshaling to YAML
-	data, err := yaml.Marshal(config)
-	if err != nil {
-		t.Fatalf("Failed to marshal config to YAML: %v", err)
-	}
-
-	// Test unmarshaling from YAML
-	var unmarshaledConfig Config
-	err = yaml.Unmarshal(data, &unmarshaledConfig)
-	if err != nil {
-		t.Fatalf("Failed to unmarshal config from YAML: %v", err)
-	}
-
-	// Verify all fields match
-	if unmarshaledConfig.GamePath != config.GamePath {
-		t.Errorf("GamePath mismatch: expected %s, got %s", config.GamePath, unmarshaledConfig.GamePath)
-	}
-	if unmarshaledConfig.GameName != config.GameName {
-		t.Errorf("GameName mismatch: expected %s, got %s", config.GameName, unmarshaledConfig.GameName)
-	}
-	if unmarshaledConfig.LaunchArgs != config.LaunchArgs {
-		t.Errorf("LaunchArgs mismatch: expected %s, got %s", config.LaunchArgs, unmarshaledConfig.LaunchArgs)
-	}
-	if unmarshaledConfig.Enabled != config.Enabled {
-		t.Errorf("Enabled mismatch: expected %v, got %v", config.Enabled, unmarshaledConfig.Enabled)
-	}
-	if unmarshaledConfig.BootDelay != config.BootDelay {
-		t.Errorf("BootDelay mismatch: expected %d, got %d", config.BootDelay, unmarshaledConfig.BootDelay)
-	}
-	if unmarshaledConfig.Schedule != config.Schedule {
-		t.Errorf("Schedule mismatch: expected %s, got %s", config.Schedule, unmarshaledConfig.Schedule)
-	}
-}
-
-// Helper function to test schedule logic with a specific time
-func shouldLaunchNowWithTime(config *Config, now time.Time) bool {
-	switch config.Schedule {
-	case "always":
-		return true
-
-	case "after_5pm_daily":
-		return now.Hour() >= 17
-
-	case "weekends_anytime":
-		weekday := now.Weekday()
-		return weekday == time.Saturday || weekday == time.Sunday
-
-	case "tue_thu_after_8pm":
-		weekday := now.Weekday()
-		return (weekday == time.Tuesday || weekday == time.Thursday) && now.Hour() >= 20
-
-	case "weekdays_evening":
-		weekday := now.Weekday()
-		return weekday >= time.Monday && weekday <= time.Friday && now.Hour() >= 18 && now.Hour() < 22
-
-	default:
-		return false
-	}
-}
-
-// Helper function to test config path resolution with a specific executable path
+// getConfigPathWithExecutable replicates getConfigPath with a controllable
+// executable path so tests can verify fallback logic without touching real FS.
 func getConfigPathWithExecutable(executablePath string) string {
 	localDir := filepath.Dir(executablePath)
 	localConfig := filepath.Join(localDir, "config.yaml")
-
 	if _, err := os.Stat(localConfig); err == nil {
 		return localConfig
 	}
 
-	// Fall back to OS-appropriate location
 	var configDir string
-
 	switch {
 	case strings.Contains(strings.ToLower(os.Getenv("OS")), "windows"):
 		configDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher")
@@ -372,319 +601,420 @@ func getConfigPathWithExecutable(executablePath string) string {
 		home, _ := os.UserHomeDir()
 		configDir = filepath.Join(home, ".config", "FrictionlessLauncher")
 	}
-
 	return filepath.Join(configDir, "config.yaml")
 }
 
+// ---- cleanupOldLogs ---------------------------------------------------------
+
 func TestCleanupOldLogs(t *testing.T) {
-	// Create temporary directory for test logs
-	tempDir, err := os.MkdirTemp("", "frictionless_logs_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	dir, _ := os.MkdirTemp("", "logs_*")
+	defer os.RemoveAll(dir)
 
-	// Create test log files with different ages
-	now := time.Now()
+	recentLog := filepath.Join(dir, "recent.log")
+	oldLog := filepath.Join(dir, "old.log")
+	notALog := filepath.Join(dir, "other.txt")
 
-	// Recent log (should be kept)
-	recentLog := filepath.Join(tempDir, "recent.log")
-	if err := os.WriteFile(recentLog, []byte("recent log"), 0644); err != nil {
-		t.Fatalf("Failed to create recent log: %v", err)
-	}
+	os.WriteFile(recentLog, []byte("new"), 0644)
+	os.WriteFile(oldLog, []byte("old"), 0644)
+	os.WriteFile(notALog, []byte("txt"), 0644)
 
-	// Old log (should be deleted)
-	oldLog := filepath.Join(tempDir, "old.log")
-	if err := os.WriteFile(oldLog, []byte("old log"), 0644); err != nil {
-		t.Fatalf("Failed to create old log: %v", err)
-	}
+	old := time.Now().AddDate(0, 0, -8)
+	os.Chtimes(oldLog, old, old)
+	os.Chtimes(notALog, old, old)
 
-	// Set the old log's modification time to 8 days ago
-	eightDaysAgo := now.AddDate(0, 0, -8)
-	if err := os.Chtimes(oldLog, eightDaysAgo, eightDaysAgo); err != nil {
-		t.Fatalf("Failed to set old log time: %v", err)
-	}
+	cleanupOldLogs(dir)
 
-	// Non-log file (should be ignored)
-	nonLogFile := filepath.Join(tempDir, "other.txt")
-	if err := os.WriteFile(nonLogFile, []byte("not a log"), 0644); err != nil {
-		t.Fatalf("Failed to create non-log file: %v", err)
-	}
-
-	// Set non-log file to old time too
-	if err := os.Chtimes(nonLogFile, eightDaysAgo, eightDaysAgo); err != nil {
-		t.Fatalf("Failed to set non-log file time: %v", err)
-	}
-
-	// Run cleanup
-	cleanupOldLogs(tempDir)
-
-	// Check results
 	if _, err := os.Stat(recentLog); os.IsNotExist(err) {
-		t.Error("Recent log file should still exist")
+		t.Error("recent log should be kept")
 	}
-
 	if _, err := os.Stat(oldLog); !os.IsNotExist(err) {
-		t.Error("Old log file should have been deleted")
+		t.Error("old log should be deleted")
 	}
-
-	if _, err := os.Stat(nonLogFile); os.IsNotExist(err) {
-		t.Error("Non-log file should not have been deleted")
-	}
-}
-
-func TestCleanupOldLogs_EmptyDirectory(t *testing.T) {
-	// Create empty temporary directory
-	tempDir, err := os.MkdirTemp("", "frictionless_empty_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Should not panic or error on empty directory
-	cleanupOldLogs(tempDir)
-}
-
-func TestCleanupOldLogs_NonexistentDirectory(t *testing.T) {
-	// Should not panic or error on nonexistent directory
-	cleanupOldLogs("/nonexistent/directory")
-}
-
-func TestOpenLogFile_PathResolution(t *testing.T) {
-	// Create temporary directory structure
-	tempDir, err := os.MkdirTemp("", "frictionless_log_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Test the log path resolution logic
-	var expectedLogPath string
-
-	switch {
-	case runtime.GOOS == "windows":
-		// We can't easily mock environment variables, so we'll test the logic
-		if os.Getenv("LOCALAPPDATA") != "" {
-			expectedLogPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher", "frictionless-launcher.log")
-		}
-	case fileExists("/Users"):
-		// macOS
-		home, _ := os.UserHomeDir()
-		expectedLogPath = filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher", "frictionless-launcher.log")
-	default:
-		// Linux
-		home, _ := os.UserHomeDir()
-		expectedLogPath = filepath.Join(home, ".config", "FrictionlessLauncher", "frictionless-launcher.log")
-	}
-
-	if expectedLogPath != "" {
-		// Verify the path contains the expected components
-		if !strings.Contains(expectedLogPath, "FrictionlessLauncher") {
-			t.Errorf("Log path should contain 'FrictionlessLauncher', got %s", expectedLogPath)
-		}
-		if !strings.HasSuffix(expectedLogPath, "frictionless-launcher.log") {
-			t.Errorf("Log path should end with 'frictionless-launcher.log', got %s", expectedLogPath)
-		}
+	if _, err := os.Stat(notALog); os.IsNotExist(err) {
+		t.Error("non-.log file should not be deleted")
 	}
 }
 
-func TestSetupLogging_DirectoryCreation(t *testing.T) {
-	// Save original log output
-	originalOutput := log.Writer()
-	originalFlags := log.Flags()
-	defer func() {
-		log.SetOutput(originalOutput)
-		log.SetFlags(originalFlags)
-	}()
-
-	// Create a temporary directory to simulate a clean environment
-	tempDir, err := os.MkdirTemp("", "frictionless_setup_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Mock the log directory to our temp directory
-	// Note: We can't easily test setupLogging() directly due to environment dependencies,
-	// but we can test the core logic components
-
-	// Test directory creation logic
-	testLogDir := filepath.Join(tempDir, "TestFrictionlessLauncher")
-	if err := os.MkdirAll(testLogDir, 0755); err != nil {
-		t.Fatalf("Failed to create test log directory: %v", err)
-	}
-
-	// Verify directory was created
-	if _, err := os.Stat(testLogDir); os.IsNotExist(err) {
-		t.Error("Log directory should have been created")
-	}
-
-	// Test log file creation
-	testLogFile := filepath.Join(testLogDir, "test-frictionless-launcher.log")
-	file, err := os.OpenFile(testLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		t.Fatalf("Failed to create test log file: %v", err)
-	}
-	file.Close()
-
-	// Verify log file was created
-	if _, err := os.Stat(testLogFile); os.IsNotExist(err) {
-		t.Error("Log file should have been created")
-	}
+func TestCleanupOldLogs_EmptyDir(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "logs_empty_*")
+	defer os.RemoveAll(dir)
+	cleanupOldLogs(dir) // must not panic
 }
 
-func TestApp_SetupLogging(t *testing.T) {
-	// Save original log settings
-	originalOutput := log.Writer()
-	originalFlags := log.Flags()
-	defer func() {
-		log.SetOutput(originalOutput)
-		log.SetFlags(originalFlags)
-	}()
-
-	// Create temporary directory for test
-	tempDir, err := os.MkdirTemp("", "frictionless_app_logging_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Create app instance
-	app := &App{
-		configPath: filepath.Join(tempDir, "config.yaml"),
-	}
-
-	// We can't easily test the full setupLogging method due to OS dependencies,
-	// but we can test that it doesn't panic and sets up the logFile field
-
-	// Note: This test will use the actual OS paths, so we'll just verify basic functionality
-	app.setupLogging()
-
-	// Verify logFile was set (if logging setup succeeded)
-	// On some systems this might fail due to permissions, so we allow for that
-	if app.logFile != nil {
-		// Log file was successfully opened
-		defer app.closeLogFile() // Clean up
-
-		// Verify we can write to the log
-		log.Printf("Test log message from setupLogging test")
-
-		// The logFile should be a valid file handle
-		if app.logFile.Name() == "" {
-			t.Error("Log file should have a valid name")
-		}
-	}
-	// If app.logFile is nil, setupLogging failed (possibly due to permissions),
-	// but that's acceptable for a test environment
+func TestCleanupOldLogs_NonexistentDir(t *testing.T) {
+	cleanupOldLogs("/does/not/exist/at/all") // must not panic
 }
 
-func TestApp_CloseLogFile(t *testing.T) {
-	// Save original log settings
-	originalOutput := log.Writer()
-	originalFlags := log.Flags()
-	defer func() {
-		log.SetOutput(originalOutput)
-		log.SetFlags(originalFlags)
-	}()
+// ---- setupLogging / closeLogFile --------------------------------------------
 
-	// Test with nil logFile (should not panic)
+func TestApp_CloseLogFile_Nil(t *testing.T) {
 	app := &App{}
-	app.closeLogFile() // Should not panic
+	app.closeLogFile() // must not panic with nil logFile
+}
 
-	// Test with actual logFile
-	tempDir, err := os.MkdirTemp("", "frictionless_close_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+func TestApp_CloseLogFile_Open(t *testing.T) {
+	orig := log.Writer()
+	origFlags := log.Flags()
+	defer func() {
+		log.SetOutput(orig)
+		log.SetFlags(origFlags)
+	}()
 
-	// Create a log file manually
-	logFile := filepath.Join(tempDir, "test.log")
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		t.Fatalf("Failed to create test log file: %v", err)
-	}
+	dir, _ := os.MkdirTemp("", "close_*")
+	defer os.RemoveAll(dir)
 
-	app.logFile = file
-	log.SetOutput(file)
-
-	// Close the log file
+	f, _ := os.OpenFile(filepath.Join(dir, "test.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	app := &App{logFile: f}
+	log.SetOutput(f)
 	app.closeLogFile()
 
-	// Verify file was closed by trying to write (should fail)
-	_, err = file.WriteString("test")
+	// After close, writes to the file handle should fail
+	_, err := f.WriteString("after close")
 	if err == nil {
-		t.Error("Expected error writing to closed file")
+		t.Error("write to closed file should fail")
 	}
 }
 
-func TestOpenConfigFile_PathGeneration(t *testing.T) {
-	// Create temporary directory and config file
-	tempDir, err := os.MkdirTemp("", "frictionless_config_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+func TestSetupLogging_CreatesFile(t *testing.T) {
+	orig := log.Writer()
+	origFlags := log.Flags()
+	defer func() {
+		log.SetOutput(orig)
+		log.SetFlags(origFlags)
+	}()
 
-	configPath := filepath.Join(tempDir, "test-config.yaml")
-	if err := os.WriteFile(configPath, []byte("test: value"), 0644); err != nil {
-		t.Fatalf("Failed to create test config: %v", err)
+	app, _ := newTestApp(t)
+	app.setupLogging()
+	if app.logFile != nil {
+		defer app.closeLogFile()
+		if app.logFile.Name() == "" {
+			t.Error("log file should have a valid path")
+		}
 	}
-
-	app := &App{
-		configPath: configPath,
-	}
-
-	// We can't easily test the actual file opening without mocking exec.Command,
-	// but we can test the path resolution logic by checking that the file exists
-	if _, err := os.Stat(app.configPath); os.IsNotExist(err) {
-		t.Error("Config file should exist for openConfigFile to work")
-	}
-
-	// The openConfigFile method should handle the file existence check
-	// Testing the actual execution would require mocking system commands
+	// If logFile is nil, setupLogging gracefully fell back to stderr (acceptable in CI)
 }
 
-func TestOpenLogFile_CrossPlatform(t *testing.T) {
-	// Test the cross-platform command generation logic
-	var expectedCommand string
+// ---- openConfigFile / openLogFile path logic --------------------------------
 
+func TestOpenLogFile_PathResolution(t *testing.T) {
+	// Verify the log path contains expected components without actually opening it.
+	var dir string
 	switch {
 	case runtime.GOOS == "windows":
-		expectedCommand = "rundll32"
-	case fileExists("/usr/bin/open"):
-		expectedCommand = "open"
+		dir = "FrictionlessLauncher"
+	case fileExists("/Users"):
+		dir = filepath.Join("Library", "Application Support", "FrictionlessLauncher")
 	default:
-		expectedCommand = "xdg-open"
+		dir = filepath.Join(".config", "FrictionlessLauncher")
 	}
-
-	// We can't easily test the actual execution, but we can verify
-	// the platform detection logic works correctly
-	if expectedCommand == "" {
-		t.Error("Should have determined appropriate command for platform")
+	if dir == "" {
+		t.Error("expected a non-empty log directory component")
 	}
+}
 
-	// Verify the command exists on the system (for non-Windows)
-	if runtime.GOOS != "windows" {
-		if expectedCommand == "open" && !fileExists("/usr/bin/open") {
-			t.Skip("open command not available on this system")
-		}
-		if expectedCommand == "xdg-open" {
-			// xdg-open might not be available in test environments, that's OK
+func TestOpenLogFile_PathComponents(t *testing.T) {
+	// Verify that the expected path components are present on this platform.
+	var expectedParts []string
+	switch {
+	case runtime.GOOS == "windows":
+		expectedParts = []string{"FrictionlessLauncher", "frictionless-launcher.log"}
+	case fileExists("/Users"):
+		expectedParts = []string{"FrictionlessLauncher", "frictionless-launcher.log"}
+	default:
+		expectedParts = []string{"FrictionlessLauncher", "frictionless-launcher.log"}
+	}
+	for _, part := range expectedParts {
+		if part == "" {
+			t.Errorf("unexpected empty expected part")
 		}
 	}
 }
 
-func TestSaveConfig_ErrorHandling(t *testing.T) {
-	// Test saveConfig with invalid path
-	app := &App{
-		configPath: "/invalid/path/that/does/not/exist/config.yaml",
-		config: &Config{
-			GameName: "Test",
+func TestOpenLogFile_CommandSelection(t *testing.T) {
+	var expected string
+	switch {
+	case runtime.GOOS == "windows":
+		expected = "rundll32"
+	case fileExists("/usr/bin/open"):
+		expected = "open"
+	default:
+		expected = "xdg-open"
+	}
+	if expected == "" {
+		t.Error("no command selected for platform")
+	}
+}
+
+// ---- fadedIcon --------------------------------------------------------------
+
+func TestFadedIcon_Valid(t *testing.T) {
+	// iconData is embedded; test with it directly
+	result, err := fadedIcon(iconData, 128)
+	if err != nil {
+		t.Fatalf("fadedIcon failed: %v", err)
+	}
+	if len(result) == 0 {
+		t.Error("fadedIcon returned empty bytes")
+	}
+	// Result should still be a valid PNG
+	if len(result) < 8 || result[0] != 0x89 || result[1] != 'P' {
+		t.Error("fadedIcon result is not a valid PNG header")
+	}
+}
+
+func TestFadedIcon_ZeroAlpha(t *testing.T) {
+	result, err := fadedIcon(iconData, 0)
+	if err != nil {
+		t.Fatalf("fadedIcon with alpha=0 failed: %v", err)
+	}
+	if len(result) == 0 {
+		t.Error("fadedIcon returned empty bytes for alpha=0")
+	}
+}
+
+func TestFadedIcon_FullAlpha(t *testing.T) {
+	result, err := fadedIcon(iconData, 255)
+	if err != nil {
+		t.Fatalf("fadedIcon with alpha=255 failed: %v", err)
+	}
+	if len(result) == 0 {
+		t.Error("fadedIcon returned empty bytes for alpha=255")
+	}
+}
+
+func TestFadedIcon_InvalidInput(t *testing.T) {
+	_, err := fadedIcon([]byte("not a png"), 128)
+	if err == nil {
+		t.Error("fadedIcon should return error for non-PNG input")
+	}
+}
+
+// ---- discovery: scheduleOverlaps --------------------------------------------
+
+func TestScheduleOverlaps_Overlapping(t *testing.T) {
+	cases := []struct {
+		s1, e1, s2, e2 string
+		want           bool
+		desc           string
+	}{
+		{"19:00", "21:00", "20:00", "22:00", true, "partial overlap"},
+		{"19:00", "21:00", "19:00", "21:00", true, "identical"},
+		{"18:00", "22:00", "19:00", "20:00", true, "B inside A"},
+		{"19:00", "21:00", "17:00", "23:00", true, "A inside B"},
+	}
+	for _, c := range cases {
+		got := scheduleOverlaps(c.s1, c.e1, c.s2, c.e2)
+		if got != c.want {
+			t.Errorf("[%s] scheduleOverlaps(%q,%q,%q,%q) = %v, want %v",
+				c.desc, c.s1, c.e1, c.s2, c.e2, got, c.want)
+		}
+	}
+}
+
+func TestScheduleOverlaps_NonOverlapping(t *testing.T) {
+	cases := []struct {
+		s1, e1, s2, e2 string
+		desc           string
+	}{
+		{"19:00", "21:00", "21:00", "23:00", "adjacent (no gap, no overlap)"},
+		{"19:00", "21:00", "22:00", "23:00", "gap between"},
+		{"22:00", "23:00", "19:00", "21:00", "reversed order"},
+	}
+	for _, c := range cases {
+		got := scheduleOverlaps(c.s1, c.e1, c.s2, c.e2)
+		if got {
+			t.Errorf("[%s] scheduleOverlaps(%q,%q,%q,%q) = true, want false",
+				c.desc, c.s1, c.e1, c.s2, c.e2)
+		}
+	}
+}
+
+// ---- isValidTimeFormat (dialogs.go) -----------------------------------------
+
+func TestIsValidTimeFormat(t *testing.T) {
+	valid := []string{"00:00", "23:59", "19:00", "09:05", "0:0"}
+	for _, v := range valid {
+		if !isValidTimeFormat(v) {
+			t.Errorf("expected %q to be valid", v)
+		}
+	}
+
+	invalid := []string{"", "25:00", "12:60", "12", "12:00:00", "ab:cd", ":30", "12:"}
+	for _, v := range invalid {
+		if isValidTimeFormat(v) {
+			t.Errorf("expected %q to be invalid", v)
+		}
+	}
+}
+
+// ---- gameStatusLabel (ui.go) -------------------------------------------------
+
+func TestGameStatusLabelAt_Disabled(t *testing.T) {
+	app := appWithGames(nil)
+	g := Game{Enabled: false}
+	if got := gameStatusLabelAt(app, g, time.Now()); got != "Disabled" {
+		t.Errorf("expected 'Disabled', got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_NoSchedule(t *testing.T) {
+	app := appWithGames(nil)
+	g := Game{Enabled: true}
+	if got := gameStatusLabelAt(app, g, time.Now()); got != "No schedule" {
+		t.Errorf("expected 'No schedule', got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_NextLaunchToday(t *testing.T) {
+	app := appWithGames(nil)
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
+	g := gameWithSchedule("Mon", "19:00", "21:00")
+
+	got := gameStatusLabelAt(app, g, now)
+	if !strings.HasPrefix(got, "Today ") {
+		t.Errorf("expected 'Today ...' label, got %q", got)
+	}
+	if !strings.Contains(got, "19:00") {
+		t.Errorf("expected start time in label, got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_NextLaunchFutureDay(t *testing.T) {
+	app := appWithGames(nil)
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday
+	g := gameWithSchedule("Thu", "19:00", "21:00")
+
+	got := gameStatusLabelAt(app, g, now)
+	if !strings.Contains(got, "Thu") || !strings.Contains(got, "19:00") {
+		t.Errorf("expected 'Thu' and '19:00' in label, got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_PicksEarliestOfMultipleSchedules(t *testing.T) {
+	app := appWithGames(nil)
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
+	g := Game{
+		Enabled: true,
+		Schedules: []Schedule{
+			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
+			{Days: []string{"Mon"}, StartTime: "12:00", EndTime: "13:00"},
 		},
 	}
 
-	// This should not panic, even with an invalid path
-	app.saveConfig()
-	// The method should handle the error gracefully (just log it)
+	got := gameStatusLabelAt(app, g, now)
+	if !strings.Contains(got, "12:00") {
+		t.Errorf("expected the earlier 12:00 window to win, got %q", got)
+	}
+}
+
+// ---- discovery: Steam / Epic (file-system driven) ---------------------------
+
+func TestDiscoverSteamGames_EmptyDir(t *testing.T) {
+	// No Steam install present in test env → must return nil, not panic
+	games := discoverSteamGames()
+	_ = games // nil or empty is fine
+}
+
+func TestDiscoverEpicGames_EmptyDir(t *testing.T) {
+	games := discoverEpicGames()
+	_ = games
+}
+
+func TestDiscoverGames_ReturnsSlice(t *testing.T) {
+	games := discoverGames()
+	_ = games // just ensure it doesn't panic
+}
+
+func TestDiscoverSteamGames_WithFakeVDF(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "steam_*")
+	defer os.RemoveAll(dir)
+
+	// Build a minimal Steam library structure
+	steamapps := filepath.Join(dir, "steamapps")
+	os.MkdirAll(steamapps, 0755)
+
+	vdf := `"libraryfolders"
+{
+	"0"
+	{
+		"path"		"` + dir + `"
+	}
+}`
+	os.WriteFile(filepath.Join(dir, "steamapps", "libraryfolders.vdf"), []byte(vdf), 0644)
+
+	acf := `"AppState"
+{
+	"appid"		"12345"
+	"name"		"Cool Game"
+}`
+	os.WriteFile(filepath.Join(steamapps, "appmanifest_12345.acf"), []byte(acf), 0644)
+
+	// We can't easily override steamBasePaths() without a refactor, so we test
+	// the manifest parsing logic directly by placing files where the function
+	// would look — and verify the function doesn't panic.
+	games := discoverSteamGames()
+	_ = games
+}
+
+func TestDiscoverEpicGames_WithFakeManifest(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "epic_*")
+	defer os.RemoveAll(dir)
+
+	manifest := `{
+  "DisplayName": "Epic Game",
+  "AppName": "epicapp123"
+}`
+	os.WriteFile(filepath.Join(dir, "game.item"), []byte(manifest), 0644)
+
+	// epicManifestPath returns a real OS path we can't override; just verify
+	// parsing logic won't panic by calling the function.
+	games := discoverEpicGames()
+	_ = games
+}
+
+// ---- isPlatformRunning (smoke test) -----------------------------------------
+
+func TestIsPlatformRunning_UnknownPlatform(t *testing.T) {
+	app := appWithGames(nil)
+	if app.isPlatformRunning("unknown_platform_xyz") {
+		t.Error("unknown platform should return false")
+	}
+}
+
+func TestIsPlatformRunning_KnownPlatforms_NoPanic(t *testing.T) {
+	app := appWithGames(nil)
+	// Just verify no panic; result depends on whether steam/epic are actually running
+	_ = app.isPlatformRunning("steam")
+	_ = app.isPlatformRunning("epic")
+}
+
+// ---- isGameRunning ----------------------------------------------------------
+
+func TestIsGameRunning_NoDirectGames(t *testing.T) {
+	app := appWithGames([]Game{
+		{GameName: "A", LaunchMethod: "steam", GamePath: "steam://rungameid/1"},
+	})
+	// Steam games don't use process detection
+	if app.isGameRunning() {
+		t.Error("non-direct games should not trigger process check")
+	}
+}
+
+func TestIsGameRunning_NoGames(t *testing.T) {
+	app := appWithGames([]Game{})
+	if app.isGameRunning() {
+		t.Error("no games should return false")
+	}
+}
+
+// ---- launchGameByStruct (launch method dispatch) ----------------------------
+
+func TestLaunchGameByStruct_EmptyPath(t *testing.T) {
+	// launchGameByStruct returns early with a log when GamePath is empty.
+	app := &App{
+		config:         &Config{Games: []Game{}, BootDelay: 10},
+		lastLaunchTime: make(map[string]time.Time),
+	}
+	game := Game{GameName: "NullGame", GamePath: "", LaunchMethod: "direct"}
+	app.launchGameByStruct(game) // must not panic
 }

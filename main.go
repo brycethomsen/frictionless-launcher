@@ -1,24 +1,30 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
-	"fyne.io/systray"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/driver/desktop"
 	"github.com/fsnotify/fsnotify"
 	"github.com/shirou/gopsutil/v4/process"
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed icon.ico
+//go:embed icon.png
 var iconData []byte
 
 type Schedule struct {
@@ -49,130 +55,186 @@ type Config struct {
 }
 
 type App struct {
-	config         *Config
-	configPath     string
-	launchPending  bool
-	shouldCancel   int32              // Atomic flag: 1 = cancel, 0 = continue
-	logFile        *os.File           // Log file handle for proper cleanup
-	lastLaunchTime map[string]time.Time // Track last launch time per game name
+	config             *Config
+	configPath         string
+	logFile            *os.File
+	lastLaunchTime     map[string]time.Time
+	ui                 *GameManagerUI
+	desk               desktop.App
+	cancelLaunch       func()
+	pendingGameName    string
+	pendingSecondsLeft int
 }
 
 func main() {
-	app := &App{
+	a := &App{
 		configPath:     getConfigPath(),
-		launchPending:  false,
 		lastLaunchTime: make(map[string]time.Time),
 	}
 
-	// Set up logging to file and store handle in app
-	app.setupLogging()
-	defer app.closeLogFile() // Ensure log file is closed on exit
+	a.setupLogging()
+	defer a.closeLogFile()
 
-	app.loadConfig()
+	a.loadConfig()
+	log.Printf("Config path: %s", a.configPath)
+	a.ui = newGameManagerUI(a)
 
-	// Check each game's schedule at boot
-	for _, game := range app.config.Games {
-		if game.Enabled && app.shouldLaunchGame(game) {
-			app.launchPending = true
-			go app.autoLaunchGameByName(game)
-			break // Only launch one game at boot
-		}
-	}
+	go a.scheduleMonitor()
+	go a.watchConfigFile()
 
-	// Start continuous schedule monitoring
-	go app.scheduleMonitor()
-
-	// Start config file watcher for hot-reload
-	go app.watchConfigFile()
-
-	// Start system tray
-	systray.Run(app.onReady, app.onExit)
-}
-
-func (app *App) onReady() {
-	app.updateTrayIcon()
-
-	// Use embedded .ico file
-	systray.SetIcon(iconData)
-
-	// Display games as clickable menu items
-	var gameMenuItems []*systray.MenuItem
-	if len(app.config.Games) > 0 {
-		for _, game := range app.config.Games {
-			scheduleInfo := app.getGameScheduleInfo(game)
-			gameItem := systray.AddMenuItem(game.GameName, scheduleInfo)
-			gameMenuItems = append(gameMenuItems, gameItem)
-		}
-	} else {
-		noGames := systray.AddMenuItem("No games configured", "Add games in config.yaml")
-		noGames.Disable()
-	}
-
-	systray.AddSeparator()
-
-	editConfig := systray.AddMenuItem("Edit Config", "Open config.yaml in default editor")
-	openLogs := systray.AddMenuItem("View Logs", "Open log file in default editor")
-	quit := systray.AddMenuItem("Exit", "Exit Frictionless Launcher")
-
-	// Handle menu clicks
-	go func() {
-		for {
-			select {
-			case <-editConfig.ClickedCh:
-				app.openConfigFile()
-
-			case <-openLogs.ClickedCh:
-				app.openLogFile()
-
-			case <-quit.ClickedCh:
-				systray.Quit()
-				return
+	setupDockBehavior(a.ui.fyneApp, func() {
+		bootLaunched := false
+		for _, game := range a.config.Games {
+			if game.Enabled && a.shouldLaunchGame(game) {
+				log.Printf("Boot within schedule window for %s — queuing auto-launch", game.GameName)
+				go a.autoLaunchGameByName(game)
+				bootLaunched = true
+				break
 			}
 		}
-	}()
+		if !bootLaunched {
+			log.Println("No games in schedule window at boot")
+		}
+	})
 
-	// Handle game launches
-	for i, gameItem := range gameMenuItems {
-		go func(idx int, item *systray.MenuItem) {
-			for range item.ClickedCh {
-				if idx < len(app.config.Games) {
-					game := app.config.Games[idx]
-					log.Printf("User clicked to launch: %s", game.GameName)
+	iconRes := fyne.NewStaticResource("icon.png", iconData)
+	a.ui.fyneApp.SetIcon(iconRes)
+
+	if desk, ok := a.ui.fyneApp.(desktop.App); ok {
+		a.desk = desk
+		desk.SetSystemTrayIcon(iconRes)
+		desk.SetSystemTrayMenu(a.buildTrayMenu(desk))
+	}
+
+	a.ui.fyneApp.Run()
+	a.closeLogFile()
+}
+
+func (app *App) buildTrayMenu(desk desktop.App) *fyne.Menu {
+	quitItem := fyne.NewMenuItem("Quit", func() { app.ui.fyneApp.Quit() })
+	quitItem.IsQuit = true
+
+	items := []*fyne.MenuItem{}
+
+	if app.cancelLaunch != nil {
+		label := fmt.Sprintf("⏳ %s launching in %ds... — Cancel", app.pendingGameName, app.pendingSecondsLeft)
+		cancelItem := fyne.NewMenuItem(label, func() {
+			if app.cancelLaunch != nil {
+				app.cancelLaunch()
+			}
+		})
+		items = append(items, cancelItem)
+	} else {
+		upcoming := app.nextScheduledGames(3)
+		if len(upcoming) == 0 {
+			noGames := fyne.NewMenuItem("No games scheduled", nil)
+			noGames.Disabled = true
+			items = append(items, noGames)
+		} else {
+			for _, g := range upcoming {
+				game := g
+				label := fmt.Sprintf("%s — %s", game.GameName, app.nextScheduleLabel(game))
+				items = append(items, fyne.NewMenuItem(label, func() {
 					go app.launchGameByStruct(game)
+				}))
+			}
+		}
+	}
+
+	items = append(items,
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Manage Games...", func() { app.ui.show() }),
+		fyne.NewMenuItem("View Logs", func() { app.openLogFile() }),
+		fyne.NewMenuItemSeparator(),
+		quitItem,
+	)
+
+	return fyne.NewMenu("Frictionless", items...)
+}
+
+// nextScheduledGames returns up to n enabled games sorted by their next upcoming schedule time.
+func (app *App) nextScheduledGames(n int) []Game {
+	now := time.Now()
+	type candidate struct {
+		game Game
+		next time.Time
+	}
+	var candidates []candidate
+	for _, game := range app.config.Games {
+		if !game.Enabled {
+			continue
+		}
+		if t, ok := app.nextScheduleTime(game, now); ok {
+			candidates = append(candidates, candidate{game, t})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].next.Before(candidates[j].next)
+	})
+	if len(candidates) > n {
+		candidates = candidates[:n]
+	}
+	result := make([]Game, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.game
+	}
+	return result
+}
+
+// nextScheduleTime returns the next time a game's schedule will start, within the next 7 days.
+func (app *App) nextScheduleTime(game Game, from time.Time) (time.Time, bool) {
+	for daysAhead := 0; daysAhead <= 7; daysAhead++ {
+		day := from.AddDate(0, 0, daysAhead)
+		dayName := day.Weekday().String()[:3]
+		var earliest time.Time
+		found := false
+		for _, s := range game.Schedules {
+			for _, d := range s.Days {
+				if !strings.EqualFold(d, dayName) {
+					continue
+				}
+				startH, startM := 0, 0
+				fmt.Sscanf(s.StartTime, "%d:%d", &startH, &startM)
+				candidate := time.Date(day.Year(), day.Month(), day.Day(), startH, startM, 0, 0, day.Location())
+				if !candidate.After(from) {
+					continue
+				}
+				if !found || candidate.Before(earliest) {
+					earliest = candidate
+					found = true
 				}
 			}
-		}(i, gameItem)
+		}
+		if found {
+			return earliest, true
+		}
 	}
+	return time.Time{}, false
 }
 
-func (app *App) onExit() {
-	// Cleanup if needed
+// nextScheduleLabel returns a human-readable label for the next schedule, e.g. "Thu 19:00".
+func (app *App) nextScheduleLabel(game Game) string {
+	return app.nextScheduleLabelAt(game, time.Now())
+}
+
+func (app *App) nextScheduleLabelAt(game Game, now time.Time) string {
+	t, ok := app.nextScheduleTime(game, now)
+	if !ok {
+		return "unscheduled"
+	}
+	if t.Before(now.Add(24 * time.Hour)) {
+		return "Today " + t.Format("15:04")
+	}
+	return t.Format("Mon 15:04")
 }
 
 func (app *App) loadConfig() {
-	// Set defaults based on platform
 	app.config = &Config{
 		BootDelay: 10,
-		Games: []Game{
-			{
-				GameName:     "Stardew Valley",
-				GamePath:     "steam://rungameid/413150",
-				LaunchMethod: "steam",
-				LaunchArgs:   "",
-				Schedules: []Schedule{
-					{
-						Days:      []string{"Thu"},
-						StartTime: "19:00",
-						EndTime:   "21:00",
-					},
-				},
-				Enabled: true,
-			},
-		},
 	}
 
 	if _, err := os.Stat(app.configPath); os.IsNotExist(err) {
-		log.Println("No config found, creating default config.yaml")
+		log.Println("No config found, creating empty config.yaml")
 		app.saveConfig()
 		return
 	}
@@ -223,6 +285,27 @@ func (app *App) loadConfig() {
 	}
 
 	log.Printf("Loaded config with %d game(s)", len(app.config.Games))
+	app.warnScheduleOverlaps()
+}
+
+func (app *App) warnScheduleOverlaps() {
+	for i := 0; i < len(app.config.Games); i++ {
+		for _, si := range app.config.Games[i].Schedules {
+			for _, di := range si.Days {
+				for j := i + 1; j < len(app.config.Games); j++ {
+					for _, sj := range app.config.Games[j].Schedules {
+						for _, dj := range sj.Days {
+							if strings.EqualFold(di, dj) && si.StartTime < sj.EndTime && sj.StartTime < si.EndTime {
+								log.Printf("WARNING: schedule overlap between %q and %q on %s (%s-%s vs %s-%s)",
+									app.config.Games[i].GameName, app.config.Games[j].GameName,
+									di, si.StartTime, si.EndTime, sj.StartTime, sj.EndTime)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (app *App) saveConfig() {
@@ -234,7 +317,73 @@ func (app *App) saveConfig() {
 
 	if err := os.WriteFile(app.configPath, data, 0644); err != nil {
 		log.Printf("Error saving config: %v", err)
+		return
 	}
+
+	app.refreshTrayMenu()
+}
+
+func fadedIcon(src []byte, alpha uint8) ([]byte, error) {
+	img, err := png.Decode(bytes.NewReader(src))
+	if err != nil {
+		return nil, err
+	}
+	bounds := img.Bounds()
+	out := image.NewNRGBA(bounds)
+	draw.Draw(out, bounds, img, bounds.Min, draw.Src)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			c := out.NRGBAAt(x, y)
+			out.SetNRGBA(x, y, color.NRGBA{R: c.R, G: c.G, B: c.B, A: uint8(uint16(c.A) * uint16(alpha) / 255)})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, out); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (app *App) startIconPulse(stop <-chan struct{}) {
+	if app.desk == nil {
+		return
+	}
+	dimData, err := fadedIcon(iconData, 80)
+	if err != nil {
+		return
+	}
+	normalRes := fyne.NewStaticResource("icon.png", iconData)
+	dimRes := fyne.NewStaticResource("icon-dim.png", dimData)
+
+	go func() {
+		ticker := time.NewTicker(600 * time.Millisecond)
+		defer ticker.Stop()
+		dim := false
+		for {
+			select {
+			case <-stop:
+				fyne.Do(func() { app.desk.SetSystemTrayIcon(normalRes) })
+				return
+			case <-ticker.C:
+				dim = !dim
+				res := normalRes
+				if dim {
+					res = dimRes
+				}
+				r := res
+				fyne.Do(func() { app.desk.SetSystemTrayIcon(r) })
+			}
+		}
+	}()
+}
+
+func (app *App) refreshTrayMenu() {
+	if app.desk == nil {
+		return
+	}
+	fyne.Do(func() {
+		app.desk.SetSystemTrayMenu(app.buildTrayMenu(app.desk))
+	})
 }
 
 func (app *App) getGameScheduleInfo(game Game) string {
@@ -253,45 +402,24 @@ func (app *App) getGameScheduleInfo(game Game) string {
 }
 
 func (app *App) shouldLaunchGame(game Game) bool {
-	// Don't launch if a game is already running
+	return app.shouldLaunchGameAt(game, time.Now())
+}
+
+func (app *App) shouldLaunchGameAt(game Game, now time.Time) bool {
 	if app.isGameRunning() {
 		return false
 	}
-
-	// Don't launch if we already launched this game in the current window
-	if app.hasLaunchedInCurrentWindow(game) {
+	if app.hasLaunchedInCurrentWindowAt(game, now) {
 		return false
 	}
-
-	now := time.Now()
-	currentTime := now.Format("15:04")
-	currentDay := now.Weekday().String()[:3] // "Mon", "Tue", "Wed", etc.
-
-	for _, schedule := range game.Schedules {
-		// Check if current day matches any scheduled day
-		dayMatches := false
-		for _, day := range schedule.Days {
-			if strings.EqualFold(day, currentDay) {
-				dayMatches = true
-				break
-			}
-		}
-
-		if !dayMatches {
-			continue
-		}
-
-		// Check if current time is within the scheduled window
-		if currentTime >= schedule.StartTime && currentTime <= schedule.EndTime {
-			return true
-		}
-	}
-
-	return false
+	return app.isInScheduleWindowAt(game, now)
 }
 
 func (app *App) isInScheduleWindow(game Game) bool {
-	now := time.Now()
+	return app.isInScheduleWindowAt(game, time.Now())
+}
+
+func (app *App) isInScheduleWindowAt(game Game, now time.Time) bool {
 	currentTime := now.Format("15:04")
 	currentDay := now.Weekday().String()[:3]
 
@@ -303,41 +431,23 @@ func (app *App) isInScheduleWindow(game Game) bool {
 				break
 			}
 		}
-
 		if !dayMatches {
 			continue
 		}
-
 		if currentTime >= schedule.StartTime && currentTime <= schedule.EndTime {
 			return true
 		}
 	}
-
 	return false
 }
 
 func (app *App) getForegroundAppName() (string, error) {
-	processes, err := process.Processes()
-	if err != nil {
-		return "", err
+	name := getFrontmostApp()
+	// Ignore our own app and empty results
+	if name == "Frictionless" || name == "frictionless-launcher" {
+		return "", nil
 	}
-
-	for _, proc := range processes {
-		isFg, err := proc.Foreground()
-		if err != nil {
-			continue
-		}
-
-		if isFg {
-			name, err := proc.Name()
-			if err != nil {
-				continue
-			}
-			return name, nil
-		}
-	}
-
-	return "", nil
+	return name, nil
 }
 
 func (app *App) watchConfigFile() {
@@ -368,6 +478,7 @@ func (app *App) watchConfigFile() {
 				log.Printf("Config file changed, reloading...")
 				app.loadConfig()
 				log.Println("Config reloaded successfully")
+				app.refreshTrayMenu()
 			}
 
 		case err, ok := <-watcher.Errors:
@@ -412,19 +523,11 @@ func (app *App) scheduleMonitor() {
 
 					// If we already launched in this window, skip
 					if app.hasLaunchedInCurrentWindow(game) {
+						log.Printf("Already launched %s in current window, skipping", game.GameName)
 						continue
 					}
 
-					// Check if something is in the foreground
-					fgApp, _ := app.getForegroundAppName()
-					if fgApp != "" {
-						log.Printf("App in foreground (%s), showing notification for %s", fgApp, game.GameName)
-						systray.SetTooltip(fmt.Sprintf("Time to play %s! (%s is in foreground)", game.GameName, fgApp))
-						// Don't launch, but don't skip either - user can click launch manually
-						continue
-					}
-
-					// All clear - launch the game
+					// All clear or foreground app — both go through countdown popup
 					log.Printf("Schedule triggered for %s", game.GameName)
 					go app.autoLaunchGameByName(game)
 					break // Only launch one game per check cycle
@@ -435,50 +538,110 @@ func (app *App) scheduleMonitor() {
 }
 
 func (app *App) autoLaunchGameByName(game Game) {
-	defer func() {
-		app.launchPending = false
-		atomic.StoreInt32(&app.shouldCancel, 0) // Reset flag
+	fgApp, _ := app.getForegroundAppName()
+
+	cancelled := make(chan struct{})
+	app.pendingGameName = game.GameName
+	app.pendingSecondsLeft = app.config.BootDelay
+	app.cancelLaunch = func() {
+		select {
+		case <-cancelled:
+		default:
+			close(cancelled)
+		}
+	}
+	app.refreshTrayMenu()
+	app.startIconPulse(cancelled)
+
+	// Tick down the tray label every second
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cancelled:
+				return
+			case <-ticker.C:
+				app.pendingSecondsLeft--
+				if app.pendingSecondsLeft <= 0 {
+					return
+				}
+				app.refreshTrayMenu()
+			}
+		}
 	}()
 
-	log.Printf("Auto-launching %s in %d seconds", game.GameName, app.config.BootDelay)
-
-	// Countdown checking atomic flag every 100ms for responsiveness
-	for i := 0; i < app.config.BootDelay*10; i++ {
-		if i%10 == 0 { // Print countdown every second
-			cancelFlag := atomic.LoadInt32(&app.shouldCancel)
-			log.Printf("Countdown: %d seconds remaining, shouldCancel=%d", app.config.BootDelay-(i/10), cancelFlag)
-		}
-
-		// Check atomic cancel flag every 100ms
-		cancelFlag := atomic.LoadInt32(&app.shouldCancel)
-		if cancelFlag == 1 {
-			log.Println("CANCELLED - shouldCancel flag was set to 1")
-			return
-		}
-
-		time.Sleep(100 * time.Millisecond)
+	cleanup := func() {
+		app.cancelLaunch = nil
+		app.pendingGameName = ""
+		app.pendingSecondsLeft = 0
+		app.refreshTrayMenu()
 	}
 
-	// Final check before launching
-	finalFlag := atomic.LoadInt32(&app.shouldCancel)
-	if finalFlag == 1 {
-		log.Println("CANCELLED - shouldCancel flag was 1 at final check")
+	if fgApp != "" {
+		log.Printf("Foreground app detected (%s) — notifying, launching %s in %ds unless cancelled via tray", fgApp, game.GameName, app.config.BootDelay)
+		sendNativeNotification("Frictionless", fmt.Sprintf("%s is launching in %d seconds — cancel from the menu bar if needed", game.GameName, app.config.BootDelay))
+
+		select {
+		case <-cancelled:
+			log.Printf("Launch cancelled by user for %s — suppressing for remainder of schedule window", game.GameName)
+			cleanup()
+			app.recordLaunch(game)
+			return
+		case <-time.After(time.Duration(app.config.BootDelay) * time.Second):
+		}
+
+		cleanup()
+		app.launchGameByStruct(game)
 		return
 	}
 
-	log.Println("Proceeding with launch")
-	app.launchGameByStruct(game)
-}
+	log.Printf("Showing launch countdown for %s", game.GameName)
+	sendNativeNotification("Frictionless", fmt.Sprintf("Launching %s in %d seconds", game.GameName, app.config.BootDelay))
 
-func (app *App) launchGame() {
-	// Launch the first enabled game (for backwards compatibility with UI)
-	for _, game := range app.config.Games {
-		if game.Enabled {
+	done := make(chan bool, 1)
+	app.ui.showLaunchCountdown(game.GameName, app.config.BootDelay, func(launch bool) {
+		done <- launch
+	})
+
+	// Also respect tray cancel for the countdown case
+	select {
+	case <-cancelled:
+		log.Printf("Launch cancelled via tray for %s — suppressing for remainder of schedule window", game.GameName)
+		cleanup()
+		app.recordLaunch(game)
+		return
+	case launch := <-done:
+		cleanup()
+		if launch {
 			app.launchGameByStruct(game)
-			return
+		} else {
+			log.Printf("Launch cancelled by user for %s — suppressing for remainder of schedule window", game.GameName)
+			app.recordLaunch(game)
 		}
 	}
-	log.Println("No enabled games configured")
+}
+
+// buildLaunchCmd returns the exec.Cmd that would launch the given game on the
+// current OS. It does not start the command.
+func buildLaunchCmd(game Game, goos string) *exec.Cmd {
+	switch game.LaunchMethod {
+	case "steam", "epic":
+		switch goos {
+		case "darwin":
+			return exec.Command("open", "-g", game.GamePath)
+		case "windows":
+			return exec.Command("cmd", "/c", "start", game.GamePath)
+		default:
+			return exec.Command("xdg-open", game.GamePath)
+		}
+	default: // "direct" and unknown methods
+		var args []string
+		if game.LaunchArgs != "" {
+			args = strings.Fields(game.LaunchArgs)
+		}
+		return exec.Command(game.GamePath, args...)
+	}
 }
 
 func (app *App) launchGameByStruct(game Game) {
@@ -489,48 +652,18 @@ func (app *App) launchGameByStruct(game Game) {
 
 	log.Printf("Launching %s via %s", game.GameName, game.LaunchMethod)
 
-	var cmd *exec.Cmd
-
 	switch game.LaunchMethod {
 	case "steam":
-		// Launch via Steam protocol handler (keeps cloud saves)
-		// Format: steam://rungameid/APPID
-		if runtime.GOOS == "darwin" {
-			cmd = exec.Command("open", "-g", game.GamePath)
-		} else if runtime.GOOS == "windows" {
-			cmd = exec.Command("cmd", "/c", "start", game.GamePath)
-		} else {
-			cmd = exec.Command("xdg-open", game.GamePath)
+		if !app.isPlatformRunning("steam") {
+			log.Printf("Warning: Steam does not appear to be running — it will launch first, adding delay")
 		}
-
 	case "epic":
-		// Launch via Epic Games protocol handler (keeps cloud saves)
-		// Format: com.epicgames.launcher://apps/APPID/launch
-		if runtime.GOOS == "darwin" {
-			cmd = exec.Command("open", "-g", game.GamePath)
-		} else if runtime.GOOS == "windows" {
-			cmd = exec.Command("cmd", "/c", "start", game.GamePath)
-		} else {
-			cmd = exec.Command("xdg-open", game.GamePath)
+		if !app.isPlatformRunning("epic") {
+			log.Printf("Warning: Epic Games Launcher does not appear to be running — it will launch first, adding delay")
 		}
-
-	case "direct":
-		// Direct executable launch (no cloud saves)
-		var args []string
-		if game.LaunchArgs != "" {
-			args = strings.Fields(game.LaunchArgs)
-		}
-		cmd = exec.Command(game.GamePath, args...)
-
-	default:
-		log.Printf("Unknown launch method: %s, defaulting to direct", game.LaunchMethod)
-		var args []string
-		if game.LaunchArgs != "" {
-			args = strings.Fields(game.LaunchArgs)
-		}
-		cmd = exec.Command(game.GamePath, args...)
 	}
 
+	cmd := buildLaunchCmd(game, runtime.GOOS)
 	if err := cmd.Start(); err != nil {
 		log.Printf("Error launching game: %v", err)
 		return
@@ -540,133 +673,52 @@ func (app *App) launchGameByStruct(game Game) {
 	log.Printf("%s launched successfully", game.GameName)
 }
 
-func (app *App) updateToggleMenuItem(item *systray.MenuItem) {
-	if app.config.Enabled {
-		item.SetTitle("Disable Auto-Launch")
-	} else {
-		item.SetTitle("Enable Auto-Launch")
-	}
-}
-
-func (app *App) updateTrayIcon() {
-	tooltip := "Frictionless Launcher - "
-	activeGames := 0
-	for _, game := range app.config.Games {
-		if game.Enabled && app.shouldLaunchGame(game) {
-			activeGames++
-		}
-	}
-
-	if activeGames > 0 {
-		tooltip += "Active (in schedule)"
-	} else if len(app.config.Games) > 0 {
-		tooltip += "Active (outside schedule)"
-	} else {
-		tooltip += "No games configured"
-	}
-	systray.SetTooltip(tooltip)
-}
-
-func (app *App) openConfigFile() {
-	configPath := app.configPath
-
-	// Check if config file exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		log.Printf("Config file not found: %s", configPath)
-		return
-	}
-
-	// Open with default program based on OS
-	var cmd *exec.Cmd
-
+// appLogDir returns the platform-appropriate directory for log files.
+func appLogDir() string {
 	switch {
 	case runtime.GOOS == "windows":
-		// Windows: use rundll32 to open the file with the default handler (preferred over "start" to avoid issues with empty strings and console flashes in cross-platform builds)
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", configPath)
-	case fileExists("/usr/bin/open"):
-		// macOS: use open command
-		cmd = exec.Command("open", configPath)
+		return filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher")
+	case fileExists("/Users"):
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher")
 	default:
-		// Linux: use xdg-open
-		cmd = exec.Command("xdg-open", configPath)
-	}
-
-	if err := cmd.Start(); err != nil {
-		log.Printf("Error opening config file: %v (location: %s)", err, configPath)
-	} else {
-		log.Printf("Opened config file: %s", configPath)
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".config", "FrictionlessLauncher")
 	}
 }
 
 func (app *App) openLogFile() {
-	// Get log file path (same logic as setupLogging)
-	var logDir string
+	openFileWithOS(filepath.Join(appLogDir(), "frictionless-launcher.log"))
+}
 
-	switch {
-	case runtime.GOOS == "windows":
-		logDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher")
-	case fileExists("/Users"):
-		// macOS
-		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher")
-	default:
-		// Linux
-		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".config", "FrictionlessLauncher")
-	}
-
-	logPath := filepath.Join(logDir, "frictionless-launcher.log")
-
-	// Check if log file exists
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		log.Printf("Log file not found: %s", logPath)
+// openFileWithOS opens path with the OS default program.
+// Returns early (with a log) if the file does not exist.
+func openFileWithOS(path string) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		log.Printf("File not found: %s", path)
 		return
 	}
 
-	// Open with default program based on OS
 	var cmd *exec.Cmd
-
 	switch {
 	case runtime.GOOS == "windows":
-		// Windows: use start command (brief console flash is unavoidable in cross-platform builds)
-		// Windows: use rundll32 to open the log file with the default handler (brief console flash is unavoidable in cross-platform builds)
-		// Windows: use rundll32 to open the log file with the default handler (brief console flash is unavoidable in cross-platform builds)
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", logPath)
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
 	case fileExists("/usr/bin/open"):
-		// macOS: use open command
-		cmd = exec.Command("open", logPath)
+		cmd = exec.Command("open", path)
 	default:
-		// Linux: use xdg-open
-		cmd = exec.Command("xdg-open", logPath)
+		cmd = exec.Command("xdg-open", path)
 	}
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("Error opening log file: %v (location: %s)", err, logPath)
+		log.Printf("Error opening file: %v (location: %s)", err, path)
 	} else {
-		log.Printf("Opened log file: %s", logPath)
+		log.Printf("Opened file: %s", path)
 	}
 }
 
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
-}
-
-func (app *App) getStatusText() string {
-	activeGames := 0
-	for _, game := range app.config.Games {
-		if game.Enabled && app.shouldLaunchGame(game) {
-			activeGames++
-		}
-	}
-
-	if activeGames > 0 {
-		return "Active (in schedule)"
-	} else if len(app.config.Games) > 0 {
-		return "Active (outside schedule)"
-	} else {
-		return "No games configured"
-	}
 }
 
 func getConfigPath() string {
@@ -707,21 +759,7 @@ func getConfigPath() string {
 }
 
 func (app *App) setupLogging() {
-	// Get log directory (same logic as config directory)
-	var logDir string
-
-	switch {
-	case runtime.GOOS == "windows":
-		logDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "FrictionlessLauncher")
-	case fileExists("/Users"):
-		// macOS
-		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, "Library", "Application Support", "FrictionlessLauncher")
-	default:
-		// Linux
-		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".config", "FrictionlessLauncher")
-	}
+	logDir := appLogDir()
 
 	// Create log directory if it doesn't exist
 	if err := os.MkdirAll(logDir, 0755); err != nil {
@@ -732,16 +770,21 @@ func (app *App) setupLogging() {
 
 	// Create log file
 	logFilePath := filepath.Join(logDir, "frictionless-launcher.log")
+	// Rotate if log exceeds 5MB
+	const maxLogSize = 5 * 1024 * 1024
+	if info, err := os.Stat(logFilePath); err == nil && info.Size() > maxLogSize {
+		rotated := logFilePath + ".1"
+		os.Remove(rotated)
+		os.Rename(logFilePath, rotated)
+	}
+
 	file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		log.Printf("Warning: Could not open log file %s: %v", logFilePath, err)
 		return
 	}
 
-	// Store file handle in app for proper cleanup
 	app.logFile = file
-
-	// Clean up old log files before setting up new logging
 	cleanupOldLogs(logDir)
 
 	// Set log output to file with timestamp
@@ -785,34 +828,68 @@ func cleanupOldLogs(logDir string) {
 	}
 }
 
+func (app *App) isPlatformRunning(platform string) bool {
+	var names []string
+	switch platform {
+	case "steam":
+		names = []string{"steam", "steam.exe", "Steam"}
+	case "epic":
+		names = []string{"EpicGamesLauncher", "EpicGamesLauncher.exe"}
+	default:
+		return false
+	}
+	procs, err := process.Processes()
+	if err != nil {
+		return false
+	}
+	for _, p := range procs {
+		name, err := p.Name()
+		if err != nil {
+			continue
+		}
+		for _, n := range names {
+			if strings.EqualFold(name, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (app *App) isGameRunning() bool {
+	// For steam/epic, hasLaunchedInCurrentWindow prevents double-launches.
+	// Only check processes for direct-launch games where we have a real executable path.
+	var directGames []Game
+	for _, game := range app.config.Games {
+		if game.LaunchMethod == "direct" && game.GamePath != "" {
+			directGames = append(directGames, game)
+		}
+	}
+	if len(directGames) == 0 {
+		return false
+	}
+
 	processes, err := process.Processes()
 	if err != nil {
 		log.Printf("Error checking processes: %v", err)
 		return false
 	}
 
-	// Check if any configured game's executable is running
-	for _, game := range app.config.Games {
+	for _, game := range directGames {
+		exeName := filepath.Base(game.GamePath)
 		for _, proc := range processes {
-			// Try to match by executable name
 			name, err := proc.Name()
 			if err != nil {
 				continue
 			}
-
-			exeName := filepath.Base(game.GamePath)
 			if strings.EqualFold(name, exeName) {
 				log.Printf("Game process found: %s", name)
 				return true
 			}
-
-			// Also try full path match for direct executables
 			exe, err := proc.Exe()
 			if err != nil {
 				continue
 			}
-
 			if strings.EqualFold(exe, game.GamePath) {
 				log.Printf("Game process found: %s", exe)
 				return true
@@ -824,13 +901,15 @@ func (app *App) isGameRunning() bool {
 }
 
 func (app *App) hasLaunchedInCurrentWindow(game Game) bool {
+	return app.hasLaunchedInCurrentWindowAt(game, time.Now())
+}
+
+func (app *App) hasLaunchedInCurrentWindowAt(game Game, now time.Time) bool {
 	lastLaunch, exists := app.lastLaunchTime[game.GameName]
 	if !exists {
 		return false
 	}
 
-	// Check if last launch is within any current schedule window
-	now := time.Now()
 	for _, schedule := range game.Schedules {
 		dayMatches := false
 		for _, day := range schedule.Days {
@@ -844,15 +923,12 @@ func (app *App) hasLaunchedInCurrentWindow(game Game) bool {
 			continue
 		}
 
-		// Parse times
 		startTime, _ := time.Parse("15:04", schedule.StartTime)
 		endTime, _ := time.Parse("15:04", schedule.EndTime)
 
-		// Adjust times to today's date for comparison
 		startTime = time.Date(now.Year(), now.Month(), now.Day(), startTime.Hour(), startTime.Minute(), 0, 0, now.Location())
 		endTime = time.Date(now.Year(), now.Month(), now.Day(), endTime.Hour(), endTime.Minute(), 0, 0, now.Location())
 
-		// If last launch is after this window's start time, we already launched in this window
 		if lastLaunch.After(startTime) && lastLaunch.Before(endTime.Add(time.Minute)) {
 			return true
 		}

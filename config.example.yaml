@@ -9,7 +9,7 @@ games:
   # Example 1: Stardew Valley via Steam (Single schedule)
   - game_name: "Stardew Valley"
     game_path: "steam://rungameid/413150"
-    launch_method: "steam"  # Options: steam, gog, epic, direct
+    launch_method: "steam"  # Options: steam, epic, direct
     launch_args: ""
     schedules:
       - days: [Thu]  # Days of week: Mon, Tue, Wed, Thu, Fri, Sat, Sun
@@ -89,12 +89,10 @@ games:
 #   Format: Full path to .exe or .app file
 #   Pros: Faster startup, no client overhead
 #   Cons: No cloud save sync, no achievements, no play time tracking
-#
-# - gog: Launch via GOG Galaxy (not yet implemented)
 
 # Schedule Format:
 # - days: Array of day abbreviations (Mon, Tue, Wed, Thu, Fri, Sat, Sun)
 # - start_time: 24-hour time format (HH:MM)
 # - end_time: 24-hour time format (HH:MM)
-# - Games launch when the current time enters the schedule window
-# - Only checks when the app starts (continuous monitoring not yet implemented)
+# - Schedules are checked continuously (not just at boot) — a game launches
+#   as soon as the current time enters one of its windows
