@@ -45,7 +45,7 @@ jobs:
       # let alone run — same packages release.yml's build-linux job installs.
       - name: Install Fyne Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
 
       - name: Run tests with coverage
         run: go test -v -race -coverprofile=coverage.out ./...
