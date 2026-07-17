@@ -178,17 +178,23 @@ jobs:
           tar -C "$(dirname "$darwin_bin")" -czf release/Frictionless-Launcher_Darwin_universal.tar.gz Frictionless-Launcher
           (cd "$(dirname "$windows_bin")" && zip -j "$GITHUB_WORKSPACE/release/Frictionless-Launcher_Windows_x86_64.zip" Frictionless-Launcher.exe)
 
-          cp README.md icon.ico release/
-
           cd release && sha256sum *.tar.gz *.zip > checksums.txt
 
       - name: Create GitHub Release
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "push" ]; then
-            gh release create "$GITHUB_REF_NAME" release/* \
-              --title "Frictionless Launcher $GITHUB_REF_NAME" \
-              --generate-notes
+            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              # Release already exists — e.g. someone published it manually
+              # via the GitHub UI, which also creates the tag and triggers
+              # this same run. Attach the binaries instead of failing on a
+              # duplicate; leave whatever title/notes are already set alone.
+              gh release upload "$GITHUB_REF_NAME" release/* --clobber
+            else
+              gh release create "$GITHUB_REF_NAME" release/* \
+                --title "Frictionless Launcher $GITHUB_REF_NAME" \
+                --generate-notes
+            fi
           else
             # Rolling dev build: one draft release, always tagged "dev", whose
             # assets get replaced each run. Drafts are only visible to people
