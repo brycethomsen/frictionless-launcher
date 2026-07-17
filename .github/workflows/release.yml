@@ -64,6 +64,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Windows Defender's real-time scanning makes Go/cgo builds dramatically
+      # slower on windows-latest. Safe here — these are single-use, ephemeral
+      # runner VMs, not a persistent machine.
+      - name: Disable Windows Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:

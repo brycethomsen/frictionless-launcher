@@ -24,6 +24,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Windows Defender's real-time scanning makes Go/cgo builds dramatically
+      # slower on windows-latest (every module file, every object file gets
+      # scanned as it's written). Safe here — these are single-use, ephemeral
+      # runner VMs, not a persistent machine.
+      - name: Disable Windows Defender real-time scanning
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
