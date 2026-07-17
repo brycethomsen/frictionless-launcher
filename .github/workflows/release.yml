@@ -51,7 +51,7 @@ jobs:
           goreleaser $args
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dist-linux
           path: dist/*
@@ -90,7 +90,7 @@ jobs:
           goreleaser $args
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dist-windows
           path: dist/*
@@ -126,7 +126,7 @@ jobs:
           goreleaser $args
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dist-darwin
           path: dist/*
@@ -143,7 +143,7 @@ jobs:
       # this job packages the artifacts from the three native build jobs
       # directly rather than invoking goreleaser again.
       - name: Download all build artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           path: dist
