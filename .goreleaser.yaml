@@ -7,72 +7,61 @@ before:
     - go mod tidy
     - go generate ./...
 
+# Split by OS (rather than one cross-compiled entry) because Fyne needs cgo,
+# and cgo cross-compiling from a single host is fragile — especially GLFW's
+# X11 dependency on Linux. Each id is built natively on its own OS's runner in
+# CI (see .github/workflows/release.yml) via `goreleaser build --id <os>`,
+# then the workflow packages the results itself — goreleaser's OSS `release`
+# command has no way to skip rebuilding and use pre-built binaries instead
+# (that's Pro-only), so archives/checksums/changelog/publish all happen as
+# plain shell + `gh release create` in the workflow, not via `goreleaser
+# release`. Linux/arm64 is intentionally not built — same as the Makefile's
+# `linux`/`steamos` targets, which are amd64-only (Steam Deck is x86_64).
 builds:
-  - env:
-      - CGO_ENABLED=1  # Required for fyne.io/systray
+  - id: linux
+    env:
+      - CGO_ENABLED=1
     goos:
       - linux
-      - windows
-      - darwin
     goarch:
       - amd64
-      - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
     ldflags:
       - -s -w -X main.version={{.Version}}
     flags:
       - -trimpath
-    overrides:
-      - goos: windows
-        ldflags:
-          - -s -w -X main.version={{.Version}}
-          - -H windowsgui  # Hide console window on Windows
 
-archives:
-  - name_template: >-
-      {{ .ProjectName }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else if eq .Arch "386" }}i386
-      {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
-    files:
-      - README.md
-      - LICENSE*
-      - icon.ico
+  - id: darwin
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    flags:
+      - -trimpath
 
-checksum:
-  name_template: 'checksums.txt'
-
-snapshot:
-  version_template: "{{ incpatch .Version }}-next"
-
-changelog:
-  sort: asc
-  filters:
-    exclude:
-      - '^docs:'
-      - '^test:'
-
-release:
-  github:
-    owner: brycethomsen
-    name: frictionless
-  draft: false
-  prerelease: auto
-  name_template: "{{.ProjectName}} v{{.Version}}"
-  header: |
-    ## What's Changed
-  footer: |
-    **Full Changelog**: https://github.com/brycethomsen/frictionless/compare/{{ .PreviousTag }}...{{ .Tag }}
+  - id: windows
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+      - -H windowsgui
+    flags:
+      - -trimpath
 
 universal_binaries:
-  - replace: true
+  - ids: [darwin]
+    replace: true
     name_template: '{{ .ProjectName }}'
     hooks:
-      post: 
+      post:
         - cmd: codesign -s - {{ .Path }}
           env:
             - GOOS=darwin

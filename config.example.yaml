@@ -1,0 +1,98 @@
+# Frictionless Launcher Configuration
+# This file configures which games to launch and when
+
+# Global settings
+boot_delay: 10  # Seconds to wait before auto-launching a game on boot
+
+# List of games to manage
+games:
+  # Example 1: Stardew Valley via Steam (Single schedule)
+  - game_name: "Stardew Valley"
+    game_path: "steam://rungameid/413150"
+    launch_method: "steam"  # Options: steam, epic, direct
+    launch_args: ""
+    schedules:
+      - days: [Thu]  # Days of week: Mon, Tue, Wed, Thu, Fri, Sat, Sun
+        start_time: "19:00"  # 24-hour format
+        end_time: "21:00"
+    enabled: true
+
+  # Example 2: Cyberpunk 2077 with launch arguments (Weekend schedule)
+  - game_name: "Cyberpunk 2077"
+    game_path: "steam://rungameid/1091500"
+    launch_method: "steam"
+    launch_args: "-skipStartScreen --launcher-skip"
+    schedules:
+      - days: [Sat, Sun]
+        start_time: "00:00"
+        end_time: "23:59"
+    enabled: true
+
+  # Example 3: Multiple schedules for the same game
+  - game_name: "Baldur's Gate 3"
+    game_path: "steam://rungameid/1086940"
+    launch_method: "steam"
+    launch_args: ""
+    schedules:
+      # Weekday evenings
+      - days: [Mon, Tue, Wed, Thu, Fri]
+        start_time: "18:00"
+        end_time: "22:00"
+      # Weekend mornings
+      - days: [Sat, Sun]
+        start_time: "09:00"
+        end_time: "12:00"
+    enabled: true
+
+  # Example 4: Epic Games via protocol handler
+  # Note: Cloud saves sync automatically through Epic Launcher
+  - game_name: "Fortnite"
+    game_path: "com.epicgames.launcher://apps/fortnite/launch"
+    launch_method: "epic"
+    launch_args: ""
+    schedules:
+      - days: [Sat, Sun]
+        start_time: "14:00"
+        end_time: "18:00"
+    enabled: false
+
+  # Example 5: Direct launch (bypasses launcher for faster startup)
+  # Note: This won't sync cloud saves or track achievements
+  - game_name: "The Witcher 3"
+    game_path: "/Applications/The Witcher 3.app/Contents/MacOS/witcher3"
+    launch_method: "direct"
+    launch_args: "-skipintro"
+    schedules:
+      - days: [Fri]
+        start_time: "20:00"
+        end_time: "23:59"
+    enabled: false  # Disabled - will not auto-launch
+
+# How to find Steam App IDs:
+# 1. Go to steamdb.info and search for your game
+# 2. Or visit the game's Steam store page - the URL contains the App ID
+#    Example: https://store.steampowered.com/app/413150/ -> App ID is 413150
+# 3. Then use: steam://rungameid/413150
+
+# Launch Method Details:
+# - steam: Uses Steam protocol handler (cloud saves sync automatically)
+#   Format: steam://rungameid/APPID
+#   Pros: Cloud saves, achievements, play time tracked
+#   Cons: Slightly slower due to Steam client overhead
+#
+# - epic: Uses Epic Games protocol handler (cloud saves sync automatically)
+#   Format: com.epicgames.launcher://apps/APPID/launch
+#   Pros: Cloud saves, achievements, play time tracked
+#   Cons: Slightly slower due to Epic Launcher overhead
+#
+# - direct: Launches game executable directly (no cloud saves)
+#   Format: Full path to .exe or .app file
+#   Pros: Faster startup, no client overhead
+#   Cons: No cloud save sync, no achievements, no play time tracking
+
+# Schedule Format:
+# - days: Array of day abbreviations (Mon, Tue, Wed, Thu, Fri, Sat, Sun)
+# - start_time: 24-hour time format (HH:MM)
+# - end_time: 24-hour time format (HH:MM)
+# - Schedules are checked continuously (not just at boot) — a game launches
+#   as soon as the current time enters one of its windows
