@@ -12,11 +12,16 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// findButton recursively walks a CanvasObject tree and returns the first
-// fyne.Tappable found (e.g. *widget.Button). Returns nil if none found.
+// findButton recursively walks a CanvasObject tree, including into compound
+// widgets via their renderer (e.g. past a *widget.Scroll boundary), and
+// returns the first fyne.Tappable found (e.g. *widget.Button). Returns nil
+// if none found.
 func findButton(obj fyne.CanvasObject) fyne.Tappable {
 	if obj == nil {
 		return nil
+	}
+	if t, ok := obj.(fyne.Tappable); ok {
+		return t
 	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
@@ -26,8 +31,39 @@ func findButton(obj fyne.CanvasObject) fyne.Tappable {
 		}
 		return nil
 	}
-	if t, ok := obj.(fyne.Tappable); ok {
-		return t
+	if w, ok := obj.(fyne.Widget); ok {
+		for _, child := range fynetest.WidgetRenderer(w).Objects() {
+			if found := findButton(child); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// findButtonWithText is like findButton but matches a specific *widget.Button
+// by its label — needed once a screen has more than one button on it.
+func findButtonWithText(obj fyne.CanvasObject, text string) *widget.Button {
+	if obj == nil {
+		return nil
+	}
+	if b, ok := obj.(*widget.Button); ok && b.Text == text {
+		return b
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findButtonWithText(child, text); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	if w, ok := obj.(fyne.Widget); ok {
+		for _, child := range fynetest.WidgetRenderer(w).Objects() {
+			if found := findButtonWithText(child, text); found != nil {
+				return found
+			}
+		}
 	}
 	return nil
 }
@@ -158,9 +194,10 @@ func TestRefresh_UpdatesWindowContent(t *testing.T) {
 	}
 }
 
-func TestRefresh_SelectListItem(t *testing.T) {
-	// Select an item in the list — this triggers OnSelected and exercises the
-	// list callbacks through the widget API rather than raw rendering.
+func TestRefresh_SelectOffBoardListItem(t *testing.T) {
+	// "Alpha" is enabled+scheduled, so it lands on the board as a block, not
+	// in the off-board *widget.List. "Beta" is disabled, so it's the one
+	// exercising the list callbacks here.
 	games := []Game{
 		{GameName: "Alpha", Enabled: true, Schedules: []Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
@@ -170,9 +207,10 @@ func TestRefresh_SelectListItem(t *testing.T) {
 	ui := newTestUI(t, games)
 	ui.refresh()
 
-	// Walk the content tree to find the *widget.List and call Select(0).
 	if l := findWidgetList(ui.window.Content()); l != nil {
 		l.Select(0) // drives Length callback + item visibility logic; must not panic
+	} else {
+		t.Fatal("expected an off-board *widget.List containing the disabled game")
 	}
 }
 
@@ -186,6 +224,14 @@ func findWidgetList(obj fyne.CanvasObject) *widget.List {
 	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
+			if found := findWidgetList(child); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	if w, ok := obj.(fyne.Widget); ok {
+		for _, child := range fynetest.WidgetRenderer(w).Objects() {
 			if found := findWidgetList(child); found != nil {
 				return found
 			}
@@ -440,7 +486,7 @@ func TestShowGameEditor_MethodLockedHidesLaunchMethodField(t *testing.T) {
 	ui.window.Show()
 
 	g := Game{GameName: "Spirit Island", GamePath: "steam://rungameid/1236720", LaunchMethod: "steam", Enabled: true}
-	ui.showGameEditor(&g, true, func(Game) {})
+	ui.showGameEditor(&g, true, func(Game) {}, nil)
 
 	form := findForm(ui.window.Canvas().Overlays().Top())
 	if form == nil {
@@ -458,7 +504,7 @@ func TestShowGameEditor_MethodUnlockedShowsLaunchMethodField(t *testing.T) {
 	ui.window.Show()
 
 	g := Game{Enabled: true}
-	ui.showGameEditor(&g, false, func(Game) {})
+	ui.showGameEditor(&g, false, func(Game) {}, nil)
 
 	form := findForm(ui.window.Canvas().Overlays().Top())
 	if form == nil {
@@ -480,10 +526,12 @@ func TestShowGameEditor_MethodUnlockedShowsLaunchMethodField(t *testing.T) {
 // ============================================================================
 
 func TestRefresh_ToggleEnabledCheckbox_UpdatesAndPersists(t *testing.T) {
+	// Enabled but unscheduled, so it lands in the off-board list — the one
+	// place a game still has an inline enable checkbox. A scheduled game
+	// renders as a board block instead, with no inline checkbox of its own;
+	// that path is covered by TestBoard_TapScheduledBlock_OpensEditor.
 	games := []Game{
-		{GameName: "Spirit Island", Enabled: true, Schedules: []Schedule{
-			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
-		}},
+		{GameName: "Spirit Island", Enabled: true},
 	}
 	ui := newTestUI(t, games)
 	ui.window.Show()
@@ -491,7 +539,7 @@ func TestRefresh_ToggleEnabledCheckbox_UpdatesAndPersists(t *testing.T) {
 
 	check := findCheck(ui.window.Content())
 	if check == nil {
-		t.Fatal("could not find enabled checkbox in game list row")
+		t.Fatal("could not find enabled checkbox in off-board game row")
 	}
 	if !check.Checked {
 		t.Fatal("expected checkbox to start checked since game.Enabled=true")
@@ -513,5 +561,76 @@ func TestRefresh_ToggleEnabledCheckbox_UpdatesAndPersists(t *testing.T) {
 	}
 	if strings.Contains(string(data), "enabled: true") {
 		t.Errorf("expected saved config to have enabled: false, got:\n%s", data)
+	}
+}
+
+// ============================================================================
+// buildScheduleBoard — tapping a scheduled block opens its editor
+// ============================================================================
+
+func TestBoard_TapScheduledBlock_OpensEditor(t *testing.T) {
+	games := []Game{
+		{GameName: "Spirit Island", Enabled: true, Schedules: []Schedule{
+			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
+		}},
+	}
+	ui := newTestUI(t, games)
+	ui.window.Show()
+	ui.refresh()
+
+	// A scheduled, enabled game has no off-board list and no inline
+	// checkbox — the block itself is the only tap target, and tapping it
+	// should be the one path into the editor.
+	btn := findButton(ui.window.Content())
+	if btn == nil {
+		t.Fatal("could not find the scheduled block's tap target")
+	}
+	fynetest.Tap(btn)
+
+	form := findForm(ui.window.Canvas().Overlays().Top())
+	if form == nil {
+		t.Fatal("expected tapping the board block to open the game editor")
+	}
+}
+
+// ============================================================================
+// showGameEditor — Delete button (only present when onDelete is non-nil)
+// ============================================================================
+
+func TestShowGameEditor_NoDeleteButtonWhenCreating(t *testing.T) {
+	ui := newTestUI(t, nil)
+	ui.window.Show()
+
+	blank := Game{Enabled: true}
+	ui.showGameEditor(&blank, false, func(Game) {}, nil)
+
+	if btn := findButtonWithText(ui.window.Canvas().Overlays().Top(), "Delete"); btn != nil {
+		t.Error("expected no Delete button when creating a new game (onDelete is nil)")
+	}
+}
+
+func TestShowGameEditor_DeleteButton_ConfirmInvokesOnDelete(t *testing.T) {
+	ui := newTestUI(t, nil)
+	ui.window.Show()
+
+	g := Game{GameName: "Spirit Island", GamePath: "steam://rungameid/1236720", LaunchMethod: "steam", Enabled: true}
+	deleted := false
+	ui.showGameEditor(&g, false, func(Game) {}, func() { deleted = true })
+
+	deleteBtn := findButtonWithText(ui.window.Canvas().Overlays().Top(), "Delete")
+	if deleteBtn == nil {
+		t.Fatal("expected a Delete button when onDelete is non-nil")
+	}
+	fynetest.Tap(deleteBtn)
+
+	// Delete asks for confirmation first, via a second dialog stacked on top.
+	confirmBtn := findButtonWithText(ui.window.Canvas().Overlays().Top(), "Delete")
+	if confirmBtn == nil {
+		t.Fatal("expected a confirmation dialog with its own Delete button")
+	}
+	fynetest.Tap(confirmBtn)
+
+	if !deleted {
+		t.Error("expected onDelete to be called after confirming")
 	}
 }

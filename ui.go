@@ -29,7 +29,7 @@ func newGameManagerUI(appRef *App) *GameManagerUI {
 	fyneApp.Settings().SetTheme(newFrictionlessTheme())
 
 	win := fyneApp.NewWindow("Frictionless Launcher")
-	win.Resize(fyne.NewSize(640, 640))
+	win.Resize(fyne.NewSize(980, 700))
 	win.CenterOnScreen()
 	win.SetCloseIntercept(func() { win.Hide() })
 
@@ -177,146 +177,15 @@ type gameRow struct {
 	deleteBtn *widget.Button
 }
 
+// refresh rebuilds the window content from the current config. The primary
+// view is the schedule board (board.go) — a literal week rather than a list
+// of records, since a schedule is what this app actually manages.
 func (ui *GameManagerUI) refresh() {
-	games := ui.appRef.config.Games
-	rows := map[fyne.CanvasObject]*gameRow{}
+	ui.window.SetContent(ui.buildScheduleBoard())
+}
 
-	var gameList *widget.List
-	gameList = widget.NewList(
-		func() int { return len(games) },
-		func() fyne.CanvasObject {
-			// Rows sit on a raised card rather than bare on the window
-			// background — flat color-on-void is what makes a dark theme
-			// read as generic; a surface for the accent to sit on, with a
-			// hairline catching light along its top edge, is what makes it
-			// read as ice rather than "dark mode with a blue highlight."
-			card := canvas.NewRectangle(color.Transparent)
-			rim := canvas.NewRectangle(colorRim)
-			rim.SetMinSize(fyne.NewSize(0, 1))
-
-			nameText := canvas.NewText("", colorMuted)
-			nameText.TextStyle = fyne.TextStyle{Bold: true}
-			nameText.TextSize = theme.TextSubHeadingSize()
-
-			dot := canvas.NewCircle(colorMuted)
-			dotWrap := container.NewGridWrap(fyne.NewSize(8, 8), dot)
-			wordText := canvas.NewText("", colorMuted)
-			clockText := canvas.NewText("", colorMuted)
-			statusRow := container.NewHBox(vCenter(dotWrap), wordText, clockText)
-
-			textBlock := container.NewVBox(nameText, statusRow)
-
-			check := widget.NewCheck("", nil)
-
-			// Low importance: no button-shaped chip of its own. The card is
-			// already the surface; a second nested chip on top of it was the
-			// redundant layer that made the actions feel bolted on.
-			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil)
-			editBtn.Importance = widget.LowImportance
-			deleteBtn := widget.NewButtonWithIcon("", theme.NewColoredResource(theme.DeleteIcon(), theme.ColorNameError), nil)
-			deleteBtn.Importance = widget.LowImportance
-
-			content := container.NewBorder(
-				nil, nil,
-				container.NewCenter(check),
-				container.NewCenter(container.NewHBox(editBtn, deleteBtn)),
-				vCenter(textBlock),
-			)
-
-			root := container.NewStack(card, container.NewBorder(rim, nil, nil, nil, content))
-			rows[root] = &gameRow{
-				card: card, nameText: nameText, dot: dot,
-				wordText: wordText, clockText: clockText,
-				check: check, editBtn: editBtn, deleteBtn: deleteBtn,
-			}
-			return root
-		},
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			if id >= len(games) {
-				return
-			}
-			game := games[id]
-			row := rows[obj]
-
-			row.card.FillColor = colorSurface()
-			row.card.Refresh()
-
-			row.nameText.Text = game.GameName
-			row.nameText.Color = theme.Color(theme.ColorNameForeground)
-			row.nameText.Refresh()
-
-			// Only the dot carries color — the genre's own "ready to play"
-			// green, same signal Steam/Heroic use for an installed, go game.
-			// The clock reads as plain ink so it stays legible data, not a
-			// second, competing accent.
-			word, clock := splitStatusLabel(gameStatusLabel(ui.appRef, game))
-			var dotColor, textColor color.Color = colorMuted, colorMuted
-			if clock != "" {
-				dotColor = colorReady
-				textColor = theme.Color(theme.ColorNameForeground)
-			}
-
-			row.dot.FillColor = dotColor
-			row.dot.Refresh()
-
-			row.wordText.Text = word
-			row.wordText.Color = textColor
-			row.wordText.TextSize = theme.CaptionTextSize()
-			row.wordText.Refresh()
-
-			row.clockText.Text = ""
-			if clock != "" {
-				row.clockText.Text = " " + clock
-			}
-			row.clockText.Color = textColor
-			row.clockText.TextSize = theme.CaptionTextSize()
-			row.clockText.TextStyle = fyne.TextStyle{Monospace: true}
-			row.clockText.Refresh()
-
-			row.check.Checked = game.Enabled
-			row.check.Refresh()
-			row.check.OnChanged = func(checked bool) {
-				ui.appRef.config.Games[id].Enabled = checked
-				ui.appRef.saveConfig()
-				fyne.Do(ui.refresh)
-			}
-
-			row.editBtn.OnTapped = func() {
-				ui.showGameEditor(&game, false, func(updated Game) {
-					ui.appRef.config.Games[id] = updated
-					ui.appRef.saveConfig()
-				})
-			}
-			row.deleteBtn.OnTapped = func() {
-				ui.showConfirmDialog("Delete Game",
-					fmt.Sprintf("Remove %s from auto-launch?", game.GameName),
-					"Delete", widget.DangerImportance,
-					func() {
-						ui.appRef.config.Games = append(
-							ui.appRef.config.Games[:id],
-							ui.appRef.config.Games[id+1:]...,
-						)
-						ui.appRef.saveConfig()
-						fyne.Do(ui.refresh)
-					},
-				)
-			}
-		},
-	)
-	// Rows have their own tap targets (checkbox/edit/delete); the list itself
-	// shouldn't retain a "selected" highlight when a row is tapped elsewhere.
-	gameList.OnSelected = func(id widget.ListItemID) {
-		gameList.Unselect(id)
-	}
-
-	addBtn := widget.NewButtonWithIcon("Add Game", theme.ContentAddIcon(), func() {
-		ui.showGamePicker(func(created Game) {
-			ui.appRef.config.Games = append(ui.appRef.config.Games, created)
-			ui.appRef.saveConfig()
-		})
-	})
-
-	exportBtn := widget.NewButtonWithIcon("Export", theme.DocumentSaveIcon(), func() {
+func (ui *GameManagerUI) exportButton() fyne.CanvasObject {
+	return widget.NewButtonWithIcon("Export", theme.DocumentSaveIcon(), func() {
 		d := dialog.NewFileSave(func(f fyne.URIWriteCloser, err error) {
 			if err != nil || f == nil {
 				return
@@ -336,8 +205,10 @@ func (ui *GameManagerUI) refresh() {
 		d.SetFileName("frictionless-games.yaml")
 		d.Show()
 	})
+}
 
-	importBtn := widget.NewButtonWithIcon("Import", theme.FolderOpenIcon(), func() {
+func (ui *GameManagerUI) importButton() fyne.CanvasObject {
+	return widget.NewButtonWithIcon("Import", theme.FolderOpenIcon(), func() {
 		dialog.ShowFileOpen(func(f fyne.URIReadCloser, err error) {
 			if err != nil || f == nil {
 				return
@@ -370,13 +241,6 @@ func (ui *GameManagerUI) refresh() {
 			)
 		}, ui.window)
 	})
-
-	footer := container.NewVBox(
-		widget.NewSeparator(),
-		container.NewHBox(addBtn, exportBtn, importBtn),
-	)
-
-	ui.window.SetContent(container.NewBorder(nil, footer, nil, nil, gameList))
 }
 
 func (ui *GameManagerUI) showGamePicker(onSave func(Game)) {
@@ -385,7 +249,7 @@ func (ui *GameManagerUI) showGamePicker(onSave func(Game)) {
 	if len(discovered) == 0 {
 		// No games found — fall straight through to manual entry
 		blank := Game{Enabled: true}
-		ui.showGameEditor(&blank, false, onSave)
+		ui.showGameEditor(&blank, false, onSave, nil)
 		return
 	}
 
@@ -410,7 +274,7 @@ func (ui *GameManagerUI) showGamePicker(onSave func(Game)) {
 		pickerDialog.Hide()
 		if id >= len(discovered) {
 			blank := Game{Enabled: true}
-			ui.showGameEditor(&blank, false, onSave)
+			ui.showGameEditor(&blank, false, onSave, nil)
 			return
 		}
 		d := discovered[id]
@@ -420,7 +284,7 @@ func (ui *GameManagerUI) showGamePicker(onSave func(Game)) {
 			LaunchMethod: d.LaunchMethod,
 			Enabled:      true,
 		}
-		ui.showGameEditor(&g, true, onSave)
+		ui.showGameEditor(&g, true, onSave, nil)
 	}
 
 	cancelBtn := widget.NewButton("Cancel", func() {
@@ -505,8 +369,11 @@ func (ui *GameManagerUI) findOverlappingGame(skipName string, days []string, sta
 // showGameEditor opens the game edit form. When methodLocked is true, the
 // Launch Method field is omitted entirely — the user already picked a
 // discovered game (and thus its launch method) in the picker dialog, so
-// re-asking here would just be redundant.
-func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave func(Game)) {
+// re-asking here would just be redundant. onDelete is nil when creating a
+// new game (nothing to delete yet); when non-nil, a Delete button appears —
+// the board has no separate delete icon of its own, so this is the one path
+// for removing a game that's currently on it.
+func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave func(Game), onDelete func()) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetText(game.GameName)
 	nameEntry.SetPlaceHolder("e.g. Stardew Valley")
@@ -554,7 +421,7 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 	argsEntry.SetText(game.LaunchArgs)
 	argsEntry.SetPlaceHolder("optional launch arguments")
 
-	allDays := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+	allDays := weekDays
 
 	type scheduleRow struct {
 		checks []*widget.Check
@@ -725,6 +592,20 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 		saveBtn,
 		widget.NewButton("Cancel", func() { d.Hide() }),
 	)
+	if onDelete != nil {
+		deleteBtn := widget.NewButton("Delete", func() {
+			ui.showConfirmDialog("Delete Game",
+				fmt.Sprintf("Remove %s from auto-launch?", game.GameName),
+				"Delete", widget.DangerImportance,
+				func() {
+					d.Hide()
+					onDelete()
+				},
+			)
+		})
+		deleteBtn.Importance = widget.DangerImportance
+		buttons.Add(deleteBtn)
+	}
 
 	scroll := container.NewVScroll(form)
 	scroll.SetMinSize(fyne.NewSize(480, 400))
