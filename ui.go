@@ -2,14 +2,17 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"io"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"gopkg.in/yaml.v3"
@@ -23,6 +26,7 @@ type GameManagerUI struct {
 
 func newGameManagerUI(appRef *App) *GameManagerUI {
 	fyneApp := app.NewWithID("com.frictionless.launcher")
+	fyneApp.Settings().SetTheme(newFrictionlessTheme())
 
 	win := fyneApp.NewWindow("Frictionless Launcher")
 	win.Resize(fyne.NewSize(640, 640))
@@ -39,27 +43,79 @@ func newGameManagerUI(appRef *App) *GameManagerUI {
 
 // showLaunchCountdown shows a countdown window. Calls onDone(true) if countdown
 // completes, onDone(false) if the user cancels. Safe to call from any goroutine.
+//
+// The numeral and progress rule run from Glacier to Melt Amber as the seconds
+// tick down, hitting full warmth exactly at zero — the one moment this app
+// visualizes friction (ice) melting away as the game launches. The color
+// steps once per tick rather than easing between them: no deceleration
+// curve, same as the app's name.
 func (ui *GameManagerUI) showLaunchCountdown(gameName string, seconds int, onDone func(launch bool)) {
 	cancelled := make(chan struct{})
 
-	countdownLabel := widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	cancelBtn := widget.NewButton("Cancel", func() {
-		close(cancelled)
-	})
+	const barWidth float32 = 260
+	const barHeight float32 = 3
 
-	updateLabel := func(remaining int) {
-		countdownLabel.SetText(fmt.Sprintf("Time to play %s!\nLaunching in %d second%s...",
-			gameName, remaining, map[bool]string{true: "", false: "s"}[remaining == 1]))
+	eyebrow := canvas.NewText("LAUNCHING", colorMuted)
+	eyebrow.Alignment = fyne.TextAlignCenter
+	eyebrow.TextSize = theme.CaptionTextSize()
+	eyebrow.TextStyle = fyne.TextStyle{Bold: true}
+
+	nameText := canvas.NewText(gameName, colorIce)
+	nameText.Alignment = fyne.TextAlignCenter
+	nameText.TextSize = theme.TextSubHeadingSize()
+	nameText.TextStyle = fyne.TextStyle{Bold: true}
+
+	numeral := canvas.NewText("", colorIce)
+	numeral.Alignment = fyne.TextAlignCenter
+	numeral.TextSize = 64
+	numeral.TextStyle = fyne.TextStyle{Monospace: true}
+
+	caption := canvas.NewText("", colorMuted)
+	caption.Alignment = fyne.TextAlignCenter
+	caption.TextSize = theme.CaptionTextSize()
+
+	track := canvas.NewRectangle(color.NRGBA{R: colorIce.R, G: colorIce.G, B: colorIce.B, A: 0x33})
+	track.Resize(fyne.NewSize(barWidth, barHeight))
+	track.Move(fyne.NewPos(0, 0))
+	fill := canvas.NewRectangle(colorIce)
+	fill.Resize(fyne.NewSize(barWidth, barHeight))
+	fill.Move(fyne.NewPos(0, 0))
+	bar := container.NewWithoutLayout(track, fill)
+	bar.Resize(fyne.NewSize(barWidth, barHeight))
+
+	cancelBtn := widget.NewButton("Cancel", func() { close(cancelled) })
+	cancelBtn.Importance = widget.LowImportance
+
+	update := func(remaining int) {
+		fraction := float64(remaining) / float64(seconds)
+		thawed := lerpColor(colorIce, colorMeltAmber, 1-fraction)
+
+		numeral.Text = fmt.Sprintf("%d", remaining)
+		numeral.Color = thawed
+		numeral.Refresh()
+
+		caption.Text = fmt.Sprintf("second%s until launch", map[bool]string{true: "", false: "s"}[remaining == 1])
+		caption.Refresh()
+
+		fill.FillColor = thawed
+		fill.Resize(fyne.NewSize(barWidth*float32(fraction), barHeight))
+		fill.Refresh()
 	}
-	updateLabel(seconds)
+	update(seconds)
 
-	content := container.NewBorder(nil, cancelBtn, nil, nil, countdownLabel)
+	content := container.NewBorder(nil, cancelBtn, nil, nil, container.NewVBox(
+		eyebrow,
+		nameText,
+		container.NewPadded(numeral),
+		caption,
+		container.NewCenter(bar),
+	))
 
 	var win fyne.Window
 	fyne.Do(func() {
 		win = ui.fyneApp.NewWindow("Frictionless")
 		win.SetContent(content)
-		win.Resize(fyne.NewSize(300, 120))
+		win.Resize(fyne.NewSize(340, 260))
 		win.SetFixedSize(true)
 		win.CenterOnScreen()
 		win.SetCloseIntercept(func() { close(cancelled) })
@@ -84,7 +140,7 @@ func (ui *GameManagerUI) showLaunchCountdown(gameName string, seconds int, onDon
 					return
 				}
 				r := remaining
-				fyne.Do(func() { updateLabel(r) })
+				fyne.Do(func() { update(r) })
 			}
 		}
 	}()
@@ -96,55 +152,142 @@ func (ui *GameManagerUI) show() {
 	ui.window.RequestFocus()
 }
 
+// vCenter vertically centers obj within whatever height its parent stretches
+// it to, without pulling it off the left edge horizontally. Fyne's Border and
+// HBox layouts stretch side content to the full row height but leave a plain
+// VBox pinned to the top of that space — list rows need every column on the
+// same vertical centerline, so this is applied consistently to all of them.
+func vCenter(obj fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewVBox(layout.NewSpacer(), obj, layout.NewSpacer())
+}
+
+// gameRow holds direct references to a list row's widgets. The row's nesting
+// (card surface + rim, centered columns, status line) got too deep for
+// reliable Objects[i].(*T) chasing, so the create/update closures below share
+// this instead of re-deriving structure from the generic fyne.CanvasObject
+// widget.List hands back.
+type gameRow struct {
+	card      *canvas.Rectangle
+	nameText  *canvas.Text
+	dot       *canvas.Circle
+	wordText  *canvas.Text
+	clockText *canvas.Text
+	check     *widget.Check
+	editBtn   *widget.Button
+	deleteBtn *widget.Button
+}
+
 func (ui *GameManagerUI) refresh() {
 	games := ui.appRef.config.Games
+	rows := map[fyne.CanvasObject]*gameRow{}
 
 	var gameList *widget.List
 	gameList = widget.NewList(
 		func() int { return len(games) },
 		func() fyne.CanvasObject {
-			return container.NewBorder(
+			// Rows sit on a raised card rather than bare on the window
+			// background — flat color-on-void is what makes a dark theme
+			// read as generic; a surface for the accent to sit on, with a
+			// hairline catching light along its top edge, is what makes it
+			// read as ice rather than "dark mode with a blue highlight."
+			card := canvas.NewRectangle(color.Transparent)
+			rim := canvas.NewRectangle(colorRim)
+			rim.SetMinSize(fyne.NewSize(0, 1))
+
+			nameText := canvas.NewText("", colorMuted)
+			nameText.TextStyle = fyne.TextStyle{Bold: true}
+			nameText.TextSize = theme.TextSubHeadingSize()
+
+			dot := canvas.NewCircle(colorMuted)
+			dotWrap := container.NewGridWrap(fyne.NewSize(8, 8), dot)
+			wordText := canvas.NewText("", colorMuted)
+			clockText := canvas.NewText("", colorMuted)
+			statusRow := container.NewHBox(vCenter(dotWrap), wordText, clockText)
+
+			textBlock := container.NewVBox(nameText, statusRow)
+
+			check := widget.NewCheck("", nil)
+
+			// Low importance: no button-shaped chip of its own. The card is
+			// already the surface; a second nested chip on top of it was the
+			// redundant layer that made the actions feel bolted on.
+			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil)
+			editBtn.Importance = widget.LowImportance
+			deleteBtn := widget.NewButtonWithIcon("", theme.NewColoredResource(theme.DeleteIcon(), theme.ColorNameError), nil)
+			deleteBtn.Importance = widget.LowImportance
+
+			content := container.NewBorder(
 				nil, nil,
-				widget.NewCheck("", nil),
-				container.NewHBox(
-					widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil),
-					widget.NewButtonWithIcon("", theme.DeleteIcon(), nil),
-				),
-				container.NewHBox(
-					widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-					widget.NewLabel(""),
-				),
+				container.NewCenter(check),
+				container.NewCenter(container.NewHBox(editBtn, deleteBtn)),
+				vCenter(textBlock),
 			)
+
+			root := container.NewStack(card, container.NewBorder(rim, nil, nil, nil, content))
+			rows[root] = &gameRow{
+				card: card, nameText: nameText, dot: dot,
+				wordText: wordText, clockText: clockText,
+				check: check, editBtn: editBtn, deleteBtn: deleteBtn,
+			}
+			return root
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			if id >= len(games) {
 				return
 			}
 			game := games[id]
+			row := rows[obj]
 
-			border := obj.(*fyne.Container)
-			left := border.Objects[0].(*fyne.Container)
-			enabledCheck := border.Objects[1].(*widget.Check)
-			right := border.Objects[2].(*fyne.Container)
+			row.card.FillColor = colorSurface()
+			row.card.Refresh()
 
-			left.Objects[0].(*widget.Label).SetText(game.GameName)
-			left.Objects[1].(*widget.Label).SetText("— " + gameStatusLabel(ui.appRef, game))
+			row.nameText.Text = game.GameName
+			row.nameText.Color = theme.Color(theme.ColorNameForeground)
+			row.nameText.Refresh()
 
-			enabledCheck.Checked = game.Enabled
-			enabledCheck.Refresh()
-			enabledCheck.OnChanged = func(checked bool) {
+			// Only the dot carries color — the genre's own "ready to play"
+			// green, same signal Steam/Heroic use for an installed, go game.
+			// The clock reads as plain ink so it stays legible data, not a
+			// second, competing accent.
+			word, clock := splitStatusLabel(gameStatusLabel(ui.appRef, game))
+			var dotColor, textColor color.Color = colorMuted, colorMuted
+			if clock != "" {
+				dotColor = colorReady
+				textColor = theme.Color(theme.ColorNameForeground)
+			}
+
+			row.dot.FillColor = dotColor
+			row.dot.Refresh()
+
+			row.wordText.Text = word
+			row.wordText.Color = textColor
+			row.wordText.TextSize = theme.CaptionTextSize()
+			row.wordText.Refresh()
+
+			row.clockText.Text = ""
+			if clock != "" {
+				row.clockText.Text = " " + clock
+			}
+			row.clockText.Color = textColor
+			row.clockText.TextSize = theme.CaptionTextSize()
+			row.clockText.TextStyle = fyne.TextStyle{Monospace: true}
+			row.clockText.Refresh()
+
+			row.check.Checked = game.Enabled
+			row.check.Refresh()
+			row.check.OnChanged = func(checked bool) {
 				ui.appRef.config.Games[id].Enabled = checked
 				ui.appRef.saveConfig()
 				fyne.Do(ui.refresh)
 			}
 
-			right.Objects[0].(*widget.Button).OnTapped = func() {
+			row.editBtn.OnTapped = func() {
 				ui.showGameEditor(&game, false, func(updated Game) {
 					ui.appRef.config.Games[id] = updated
 					ui.appRef.saveConfig()
 				})
 			}
-			right.Objects[1].(*widget.Button).OnTapped = func() {
+			row.deleteBtn.OnTapped = func() {
 				ui.showConfirmDialog("Delete Game",
 					fmt.Sprintf("Remove %s from auto-launch?", game.GameName),
 					"Delete", widget.DangerImportance,
@@ -442,10 +585,12 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 		startE := widget.NewEntry()
 		startE.SetText(s.StartTime)
 		startE.SetPlaceHolder("19:00")
+		startE.TextStyle = fyne.TextStyle{Monospace: true}
 
 		endE := widget.NewEntry()
 		endE.SetText(s.EndTime)
 		endE.SetPlaceHolder("21:00")
+		endE.TextStyle = fyne.TextStyle{Monospace: true}
 
 		row := scheduleRow{checks: checks, start: startE, end: endE}
 		rows = append(rows, row)
@@ -605,4 +750,20 @@ func gameStatusLabelAt(app *App, game Game, now time.Time) string {
 		return "No schedule"
 	}
 	return app.nextScheduleLabelAt(game, now)
+}
+
+// splitStatusLabel splits a status like "Today 19:00" into ("Today", "19:00")
+// so the clock portion can be set in monospace, matching every other time
+// value in the app. Statuses with no trailing clock value ("Disabled", "No
+// schedule") come back unsplit.
+func splitStatusLabel(status string) (word, clock string) {
+	idx := strings.LastIndex(status, " ")
+	if idx == -1 {
+		return status, ""
+	}
+	candidate := status[idx+1:]
+	if !isValidTimeFormat(candidate) {
+		return status, ""
+	}
+	return status[:idx], candidate
 }
