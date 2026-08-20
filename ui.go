@@ -145,19 +145,17 @@ func (ui *GameManagerUI) refresh() {
 				})
 			}
 			right.Objects[1].(*widget.Button).OnTapped = func() {
-				dialog.ShowConfirm("Delete Game",
+				ui.showConfirmDialog("Delete Game",
 					fmt.Sprintf("Remove %s from auto-launch?", game.GameName),
-					func(ok bool) {
-						if ok {
-							ui.appRef.config.Games = append(
-								ui.appRef.config.Games[:id],
-								ui.appRef.config.Games[id+1:]...,
-							)
-							ui.appRef.saveConfig()
-							fyne.Do(ui.refresh)
-						}
+					"Delete", widget.DangerImportance,
+					func() {
+						ui.appRef.config.Games = append(
+							ui.appRef.config.Games[:id],
+							ui.appRef.config.Games[id+1:]...,
+						)
+						ui.appRef.saveConfig()
+						fyne.Do(ui.refresh)
 					},
-					ui.window,
 				)
 			}
 		},
@@ -218,17 +216,14 @@ func (ui *GameManagerUI) refresh() {
 				dialog.ShowError(fmt.Errorf("no games found in file"), ui.window)
 				return
 			}
-			dialog.ShowConfirm("Import Games",
+			ui.showConfirmDialog("Import Games",
 				fmt.Sprintf("Replace all %d current game(s) with %d imported game(s)?", len(ui.appRef.config.Games), len(imported.Games)),
-				func(ok bool) {
-					if !ok {
-						return
-					}
+				"Replace", widget.DangerImportance,
+				func() {
 					ui.appRef.config.Games = imported.Games
 					ui.appRef.saveConfig()
 					fyne.Do(ui.refresh)
 				},
-				ui.window,
 			)
 		}, ui.window)
 	})
@@ -314,6 +309,28 @@ func clampDialogSize(win fyne.Window, want fyne.Size) fyne.Size {
 		size.Height = maxH
 	}
 	return size
+}
+
+// showConfirmDialog shows a Yes/No-style confirmation with the affirmative
+// action on the left and Cancel on the right. Fyne's built-in dialog.ShowConfirm
+// always puts Cancel on the left, so destructive/primary actions need this
+// custom layout instead.
+func (ui *GameManagerUI) showConfirmDialog(title, message, confirmLabel string, importance widget.Importance, onConfirm func()) {
+	var d *dialog.CustomDialog
+
+	content := widget.NewLabel(message)
+	content.Wrapping = fyne.TextWrapWord
+
+	confirmBtn := widget.NewButton(confirmLabel, func() {
+		d.Hide()
+		onConfirm()
+	})
+	confirmBtn.Importance = importance
+	cancelBtn := widget.NewButton("Cancel", func() { d.Hide() })
+
+	d = dialog.NewCustomWithoutButtons(title, content, ui.window)
+	d.SetButtons([]fyne.CanvasObject{confirmBtn, cancelBtn})
+	d.Show()
 }
 
 // scheduleOverlaps returns true if [start1,end1] and [start2,end2] share any time.
@@ -557,9 +574,11 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 		fyne.Do(ui.refresh)
 	}
 
+	saveBtn := widget.NewButton("Save", doSave)
+	saveBtn.Importance = widget.HighImportance
 	buttons := container.NewHBox(
+		saveBtn,
 		widget.NewButton("Cancel", func() { d.Hide() }),
-		widget.NewButton("Save", doSave),
 	)
 
 	scroll := container.NewVScroll(form)
