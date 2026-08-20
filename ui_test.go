@@ -10,6 +10,8 @@ import (
 	"fyne.io/fyne/v2"
 	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
+
+	"frictionless-launcher/internal/config"
 )
 
 // findButton recursively walks a CanvasObject tree, including into compound
@@ -124,7 +126,7 @@ func findForm(obj fyne.CanvasObject) *widget.Form {
 
 // newTestUI creates a fully wired GameManagerUI backed by a headless Fyne app.
 // No display is required — fynetest.NewTempApp uses an off-screen driver.
-func newTestUI(t *testing.T, games []Game) *GameManagerUI {
+func newTestUI(t *testing.T, games []config.Game) *GameManagerUI {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ui_test_*")
 	if err != nil {
@@ -138,7 +140,7 @@ func newTestUI(t *testing.T, games []Game) *GameManagerUI {
 	appRef := &App{
 		configPath:     filepath.Join(dir, "config.yaml"),
 		lastLaunchTime: make(map[string]time.Time),
-		config:         &Config{Games: games, BootDelay: 10},
+		config:         &config.Config{Games: games, BootDelay: 10},
 	}
 
 	return &GameManagerUI{
@@ -155,7 +157,7 @@ func newTestUI(t *testing.T, games []Game) *GameManagerUI {
 func TestGameManagerUI_FieldsWired(t *testing.T) {
 	// newGameManagerUI wraps app.NewWithID (glfw) which cannot run in a test
 	// binary — verify the struct fields via the test-app helper instead.
-	ui := newTestUI(t, []Game{})
+	ui := newTestUI(t, []config.Game{})
 	if ui.window == nil {
 		t.Error("window should not be nil")
 	}
@@ -172,12 +174,12 @@ func TestGameManagerUI_FieldsWired(t *testing.T) {
 // ============================================================================
 
 func TestRefresh_EmptyGames(t *testing.T) {
-	ui := newTestUI(t, []Game{})
+	ui := newTestUI(t, []config.Game{})
 	ui.refresh() // must not panic with empty game list
 }
 
 func TestRefresh_WithGames(t *testing.T) {
-	games := []Game{
+	games := []config.Game{
 		gameWithSchedule("Mon", "19:00", "21:00"),
 		gameWithSchedule("Fri", "18:00", "22:00"),
 	}
@@ -186,7 +188,7 @@ func TestRefresh_WithGames(t *testing.T) {
 }
 
 func TestRefresh_UpdatesWindowContent(t *testing.T) {
-	ui := newTestUI(t, []Game{gameWithSchedule("Wed", "20:00", "22:00")})
+	ui := newTestUI(t, []config.Game{gameWithSchedule("Wed", "20:00", "22:00")})
 	ui.refresh()
 	// After refresh the window should have content set
 	if ui.window.Content() == nil {
@@ -198,8 +200,8 @@ func TestRefresh_SelectOffBoardListItem(t *testing.T) {
 	// "Alpha" is enabled+scheduled, so it lands on the board as a block, not
 	// in the off-board *widget.List. "Beta" is disabled, so it's the one
 	// exercising the list callbacks here.
-	games := []Game{
-		{GameName: "Alpha", Enabled: true, Schedules: []Schedule{
+	games := []config.Game{
+		{GameName: "Alpha", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 		{GameName: "Beta", Enabled: false},
@@ -245,7 +247,7 @@ func findWidgetList(obj fyne.CanvasObject) *widget.List {
 // ============================================================================
 
 func TestShow_DoesNotPanic(t *testing.T) {
-	ui := newTestUI(t, []Game{gameWithSchedule("Thu", "19:00", "21:00")})
+	ui := newTestUI(t, []config.Game{gameWithSchedule("Thu", "19:00", "21:00")})
 	ui.show() // calls refresh() + Show() + RequestFocus()
 }
 
@@ -254,8 +256,8 @@ func TestShow_DoesNotPanic(t *testing.T) {
 // ============================================================================
 
 func TestFindOverlappingGame_NoConflict(t *testing.T) {
-	ui := newTestUI(t, []Game{
-		{GameName: "A", Enabled: true, Schedules: []Schedule{
+	ui := newTestUI(t, []config.Game{
+		{GameName: "A", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	})
@@ -267,8 +269,8 @@ func TestFindOverlappingGame_NoConflict(t *testing.T) {
 }
 
 func TestFindOverlappingGame_Conflict(t *testing.T) {
-	ui := newTestUI(t, []Game{
-		{GameName: "Existing", Enabled: true, Schedules: []Schedule{
+	ui := newTestUI(t, []config.Game{
+		{GameName: "Existing", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	})
@@ -280,8 +282,8 @@ func TestFindOverlappingGame_Conflict(t *testing.T) {
 }
 
 func TestFindOverlappingGame_SkipsSelf(t *testing.T) {
-	ui := newTestUI(t, []Game{
-		{GameName: "Self", Enabled: true, Schedules: []Schedule{
+	ui := newTestUI(t, []config.Game{
+		{GameName: "Self", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	})
@@ -293,8 +295,8 @@ func TestFindOverlappingGame_SkipsSelf(t *testing.T) {
 }
 
 func TestFindOverlappingGame_AdjacentNoConflict(t *testing.T) {
-	ui := newTestUI(t, []Game{
-		{GameName: "A", Enabled: true, Schedules: []Schedule{
+	ui := newTestUI(t, []config.Game{
+		{GameName: "A", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	})
@@ -306,8 +308,8 @@ func TestFindOverlappingGame_AdjacentNoConflict(t *testing.T) {
 }
 
 func TestFindOverlappingGame_DifferentDay(t *testing.T) {
-	ui := newTestUI(t, []Game{
-		{GameName: "A", Enabled: true, Schedules: []Schedule{
+	ui := newTestUI(t, []config.Game{
+		{GameName: "A", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	})
@@ -318,11 +320,11 @@ func TestFindOverlappingGame_DifferentDay(t *testing.T) {
 }
 
 func TestFindOverlappingGame_MultipleGames(t *testing.T) {
-	ui := newTestUI(t, []Game{
-		{GameName: "A", Enabled: true, Schedules: []Schedule{
+	ui := newTestUI(t, []config.Game{
+		{GameName: "A", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "09:00", EndTime: "11:00"},
 		}},
-		{GameName: "B", Enabled: true, Schedules: []Schedule{
+		{GameName: "B", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	})
@@ -334,8 +336,8 @@ func TestFindOverlappingGame_MultipleGames(t *testing.T) {
 }
 
 func TestFindOverlappingGame_CaseInsensitiveDay(t *testing.T) {
-	ui := newTestUI(t, []Game{
-		{GameName: "A", Enabled: true, Schedules: []Schedule{
+	ui := newTestUI(t, []config.Game{
+		{GameName: "A", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	})
@@ -412,15 +414,15 @@ func TestGameStatusLabel_ViaUI(t *testing.T) {
 	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
 
 	cases := []struct {
-		game Game
+		game config.Game
 		want string
 	}{
-		{Game{Enabled: false}, "Disabled"},
-		{Game{Enabled: true}, "No schedule"},
+		{config.Game{Enabled: false}, "Disabled"},
+		{config.Game{Enabled: true}, "No schedule"},
 		{
-			Game{
+			config.Game{
 				Enabled: true,
-				Schedules: []Schedule{
+				Schedules: []config.Schedule{
 					{Days: []string{"Mon", "Wed"}, StartTime: "18:00", EndTime: "22:00"},
 				},
 			},
@@ -485,8 +487,8 @@ func TestShowGameEditor_MethodLockedHidesLaunchMethodField(t *testing.T) {
 	ui := newTestUI(t, nil)
 	ui.window.Show()
 
-	g := Game{GameName: "Spirit Island", GamePath: "steam://rungameid/1236720", LaunchMethod: "steam", Enabled: true}
-	ui.showGameEditor(&g, true, func(Game) {}, nil)
+	g := config.Game{GameName: "Spirit Island", GamePath: "steam://rungameid/1236720", LaunchMethod: "steam", Enabled: true}
+	ui.showGameEditor(&g, true, func(config.Game) {}, nil)
 
 	form := findForm(ui.window.Canvas().Overlays().Top())
 	if form == nil {
@@ -503,8 +505,8 @@ func TestShowGameEditor_MethodUnlockedShowsLaunchMethodField(t *testing.T) {
 	ui := newTestUI(t, nil)
 	ui.window.Show()
 
-	g := Game{Enabled: true}
-	ui.showGameEditor(&g, false, func(Game) {}, nil)
+	g := config.Game{Enabled: true}
+	ui.showGameEditor(&g, false, func(config.Game) {}, nil)
 
 	form := findForm(ui.window.Canvas().Overlays().Top())
 	if form == nil {
@@ -522,6 +524,34 @@ func TestShowGameEditor_MethodUnlockedShowsLaunchMethodField(t *testing.T) {
 }
 
 // ============================================================================
+// newTimeSelect — HH:MM parsing for the schedule row's hour/minute dropdowns
+// ============================================================================
+
+func TestNewTimeSelect_ParsesExistingValue(t *testing.T) {
+	h, m := newTimeSelect("19:30", "00", "00")
+	if h.Selected != "19" || m.Selected != "30" {
+		t.Errorf("newTimeSelect(19:30) = (%q, %q), want (19, 30)", h.Selected, m.Selected)
+	}
+}
+
+func TestNewTimeSelect_SnapsMinuteDownToNearestFive(t *testing.T) {
+	// e.g. hand-edited YAML with a minute that doesn't land on a dropdown
+	// option — round down rather than error, since there's nothing to save
+	// yet at this point (just populating the form).
+	h, m := newTimeSelect("19:07", "00", "00")
+	if h.Selected != "19" || m.Selected != "05" {
+		t.Errorf("newTimeSelect(19:07) = (%q, %q), want (19, 05)", h.Selected, m.Selected)
+	}
+}
+
+func TestNewTimeSelect_FallsBackToDefaultForInvalidClock(t *testing.T) {
+	h, m := newTimeSelect("", "19", "00")
+	if h.Selected != "19" || m.Selected != "00" {
+		t.Errorf("newTimeSelect(\"\") = (%q, %q), want the provided defaults (19, 00)", h.Selected, m.Selected)
+	}
+}
+
+// ============================================================================
 // refresh — inline enable/disable checkbox
 // ============================================================================
 
@@ -530,7 +560,7 @@ func TestRefresh_ToggleEnabledCheckbox_UpdatesAndPersists(t *testing.T) {
 	// place a game still has an inline enable checkbox. A scheduled game
 	// renders as a board block instead, with no inline checkbox of its own;
 	// that path is covered by TestBoard_TapScheduledBlock_OpensEditor.
-	games := []Game{
+	games := []config.Game{
 		{GameName: "Spirit Island", Enabled: true},
 	}
 	ui := newTestUI(t, games)
@@ -569,8 +599,8 @@ func TestRefresh_ToggleEnabledCheckbox_UpdatesAndPersists(t *testing.T) {
 // ============================================================================
 
 func TestBoard_TapScheduledBlock_OpensEditor(t *testing.T) {
-	games := []Game{
-		{GameName: "Spirit Island", Enabled: true, Schedules: []Schedule{
+	games := []config.Game{
+		{GameName: "Spirit Island", Enabled: true, Schedules: []config.Schedule{
 			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
 		}},
 	}
@@ -601,8 +631,8 @@ func TestShowGameEditor_NoDeleteButtonWhenCreating(t *testing.T) {
 	ui := newTestUI(t, nil)
 	ui.window.Show()
 
-	blank := Game{Enabled: true}
-	ui.showGameEditor(&blank, false, func(Game) {}, nil)
+	blank := config.Game{Enabled: true}
+	ui.showGameEditor(&blank, false, func(config.Game) {}, nil)
 
 	if btn := findButtonWithText(ui.window.Canvas().Overlays().Top(), "Delete"); btn != nil {
 		t.Error("expected no Delete button when creating a new game (onDelete is nil)")
@@ -613,9 +643,9 @@ func TestShowGameEditor_DeleteButton_ConfirmInvokesOnDelete(t *testing.T) {
 	ui := newTestUI(t, nil)
 	ui.window.Show()
 
-	g := Game{GameName: "Spirit Island", GamePath: "steam://rungameid/1236720", LaunchMethod: "steam", Enabled: true}
+	g := config.Game{GameName: "Spirit Island", GamePath: "steam://rungameid/1236720", LaunchMethod: "steam", Enabled: true}
 	deleted := false
-	ui.showGameEditor(&g, false, func(Game) {}, func() { deleted = true })
+	ui.showGameEditor(&g, false, func(config.Game) {}, func() { deleted = true })
 
 	deleteBtn := findButtonWithText(ui.window.Canvas().Overlays().Top(), "Delete")
 	if deleteBtn == nil {
@@ -632,5 +662,129 @@ func TestShowGameEditor_DeleteButton_ConfirmInvokesOnDelete(t *testing.T) {
 
 	if !deleted {
 		t.Error("expected onDelete to be called after confirming")
+	}
+}
+
+// ============================================================================
+// scheduleOverlaps
+// ============================================================================
+
+func TestScheduleOverlaps_Overlapping(t *testing.T) {
+	cases := []struct {
+		s1, e1, s2, e2 string
+		want           bool
+		desc           string
+	}{
+		{"19:00", "21:00", "20:00", "22:00", true, "partial overlap"},
+		{"19:00", "21:00", "19:00", "21:00", true, "identical"},
+		{"18:00", "22:00", "19:00", "20:00", true, "B inside A"},
+		{"19:00", "21:00", "17:00", "23:00", true, "A inside B"},
+	}
+	for _, c := range cases {
+		got := scheduleOverlaps(c.s1, c.e1, c.s2, c.e2)
+		if got != c.want {
+			t.Errorf("[%s] scheduleOverlaps(%q,%q,%q,%q) = %v, want %v",
+				c.desc, c.s1, c.e1, c.s2, c.e2, got, c.want)
+		}
+	}
+}
+
+func TestScheduleOverlaps_NonOverlapping(t *testing.T) {
+	cases := []struct {
+		s1, e1, s2, e2 string
+		desc           string
+	}{
+		{"19:00", "21:00", "21:00", "23:00", "adjacent (no gap, no overlap)"},
+		{"19:00", "21:00", "22:00", "23:00", "gap between"},
+		{"22:00", "23:00", "19:00", "21:00", "reversed order"},
+	}
+	for _, c := range cases {
+		got := scheduleOverlaps(c.s1, c.e1, c.s2, c.e2)
+		if got {
+			t.Errorf("[%s] scheduleOverlaps(%q,%q,%q,%q) = true, want false",
+				c.desc, c.s1, c.e1, c.s2, c.e2)
+		}
+	}
+}
+
+// ============================================================================
+// isValidTimeFormat
+// ============================================================================
+
+func TestIsValidTimeFormat(t *testing.T) {
+	valid := []string{"00:00", "23:59", "19:00", "09:05", "0:0"}
+	for _, v := range valid {
+		if !isValidTimeFormat(v) {
+			t.Errorf("expected %q to be valid", v)
+		}
+	}
+
+	invalid := []string{"", "25:00", "12:60", "12", "12:00:00", "ab:cd", ":30", "12:"}
+	for _, v := range invalid {
+		if isValidTimeFormat(v) {
+			t.Errorf("expected %q to be invalid", v)
+		}
+	}
+}
+
+// ============================================================================
+// gameStatusLabelAt
+// ============================================================================
+
+func TestGameStatusLabelAt_Disabled(t *testing.T) {
+	app := appWithGames(nil)
+	g := config.Game{Enabled: false}
+	if got := gameStatusLabelAt(app, g, time.Now()); got != "Disabled" {
+		t.Errorf("expected 'Disabled', got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_NoSchedule(t *testing.T) {
+	app := appWithGames(nil)
+	g := config.Game{Enabled: true}
+	if got := gameStatusLabelAt(app, g, time.Now()); got != "No schedule" {
+		t.Errorf("expected 'No schedule', got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_NextLaunchToday(t *testing.T) {
+	app := appWithGames(nil)
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
+	g := gameWithSchedule("Mon", "19:00", "21:00")
+
+	got := gameStatusLabelAt(app, g, now)
+	if !strings.HasPrefix(got, "Today ") {
+		t.Errorf("expected 'Today ...' label, got %q", got)
+	}
+	if !strings.Contains(got, "19:00") {
+		t.Errorf("expected start time in label, got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_NextLaunchFutureDay(t *testing.T) {
+	app := appWithGames(nil)
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday
+	g := gameWithSchedule("Thu", "19:00", "21:00")
+
+	got := gameStatusLabelAt(app, g, now)
+	if !strings.Contains(got, "Thu") || !strings.Contains(got, "19:00") {
+		t.Errorf("expected 'Thu' and '19:00' in label, got %q", got)
+	}
+}
+
+func TestGameStatusLabelAt_PicksEarliestOfMultipleSchedules(t *testing.T) {
+	app := appWithGames(nil)
+	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
+	g := config.Game{
+		Enabled: true,
+		Schedules: []config.Schedule{
+			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
+			{Days: []string{"Mon"}, StartTime: "12:00", EndTime: "13:00"},
+		},
+	}
+
+	got := gameStatusLabelAt(app, g, now)
+	if !strings.Contains(got, "12:00") {
+		t.Errorf("expected the earlier 12:00 window to win, got %q", got)
 	}
 }
