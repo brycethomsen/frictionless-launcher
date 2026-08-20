@@ -229,8 +229,10 @@ func (app *App) nextScheduleLabelAt(game Game, now time.Time) string {
 }
 
 func (app *App) loadConfig() {
-	app.config = &Config{
-		BootDelay: 10,
+	if app.config == nil {
+		// First load of the process: there's no previous in-memory config to
+		// fall back to, so an empty default is the best we can do.
+		app.config = &Config{BootDelay: 10}
 	}
 
 	if _, err := os.Stat(app.configPath); os.IsNotExist(err) {
@@ -242,15 +244,22 @@ func (app *App) loadConfig() {
 	data, err := os.ReadFile(app.configPath)
 	if err != nil {
 		log.Printf("Error reading config: %v", err)
-		log.Println("Using default config due to read error")
+		log.Println("Keeping previously loaded config due to read error")
 		return
 	}
 
-	if err := yaml.Unmarshal(data, app.config); err != nil {
+	// Unmarshal into a fresh struct rather than app.config directly, and only
+	// publish it once fully parsed. Reloads are triggered by our own saves
+	// (fsnotify fires on every write, including ones we make), so a reload can
+	// race a concurrent write; if the read or parse fails we must leave the
+	// previous good config in place instead of swapping in a blank one.
+	loaded := Config{BootDelay: 10}
+	if err := yaml.Unmarshal(data, &loaded); err != nil {
 		log.Printf("Error parsing config: %v", err)
-		log.Println("Config file has invalid YAML, using defaults - please check your config.yaml file for syntax errors")
+		log.Println("Config file has invalid YAML, keeping previously loaded config - please check your config.yaml file for syntax errors")
 		return
 	}
+	app.config = &loaded
 
 	// Migrate legacy single-game config to new format if needed
 	if app.config.GamePath != "" && len(app.config.Games) == 0 {
