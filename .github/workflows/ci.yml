@@ -77,10 +77,17 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Auto-merge patch and minor updates
+      # Allowlisted by dependency group, not just semver level: the "fyne"
+      # group (see dependabot.yml) covers a GUI framework this app is deeply
+      # integrated with, and its live-wiring code isn't covered by tests the
+      # way the rest of the app is — those PRs always wait for manual review,
+      # even on a patch bump.
+      - name: Auto-merge patch and minor updates in the safe dependency groups
         if: |
-          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          steps.meta.outputs.update-type == 'version-update:semver-minor'
+          (steps.meta.outputs.dependency-group == 'go-dependencies-safe' ||
+           steps.meta.outputs.dependency-group == 'github-actions') &&
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+           steps.meta.outputs.update-type == 'version-update:semver-minor')
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

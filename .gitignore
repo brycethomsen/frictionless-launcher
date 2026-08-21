@@ -35,3 +35,6 @@ game-launcher
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# macOS Finder metadata
+.DS_Store
