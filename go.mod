@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	fyne.io/fyne/v2 v2.8.1
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/shirou/gopsutil/v4 v4.26.7
+	github.com/shirou/gopsutil/v4 v4.26.8
 	gopkg.in/yaml.v3 v3.0.1
 )
 
