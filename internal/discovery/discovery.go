@@ -1,4 +1,6 @@
-package main
+// Package discovery scans installed game-launcher manifests (Steam, Epic) to
+// find games the user could add without typing in a path by hand.
+package discovery
 
 import (
 	"fmt"
@@ -9,13 +11,18 @@ import (
 	"strings"
 )
 
+// DiscoveredGame is one game found installed via a platform launcher's own
+// manifests, ready to prefill the "add game" form.
 type DiscoveredGame struct {
 	Name         string
 	LaunchMethod string
 	GamePath     string
 }
 
-func discoverGames() []DiscoveredGame {
+// DiscoverGames scans every supported launcher (Steam, Epic) for installed
+// games. Launchers that aren't installed, or whose manifests can't be found,
+// simply contribute nothing — this never errors.
+func DiscoverGames() []DiscoveredGame {
 	var games []DiscoveredGame
 	games = append(games, discoverSteamGames()...)
 	games = append(games, discoverEpicGames()...)

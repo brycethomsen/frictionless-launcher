@@ -132,11 +132,27 @@ jobs:
           fi
           goreleaser $args
 
+      # A bare binary shows up in Finder as "Unix Executable File" and
+      # double-click opens it through Terminal.app instead of launching it
+      # silently — wrap it as a real .app bundle. Has to happen here, not in
+      # the release job, since sips/iconutil/codesign are macOS-only tools.
+      - name: Build macOS app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" != "push" ]; then
+            version="0.0.0-dev"
+          fi
+          bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*darwin_all*' | head -1)
+          ./scripts/build-macos-app.sh "$bin" dist "$version"
+          ditto -c -k --keepParent dist/Frictionless-Launcher.app dist/Frictionless-Launcher_Darwin_universal.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: dist-darwin
-          path: dist/*
+          path: dist/Frictionless-Launcher_Darwin_universal.zip
 
   release:
     needs: [build-linux, build-windows, build-darwin]
@@ -162,13 +178,13 @@ jobs:
           mkdir -p release
 
           linux_bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*linux*' | head -1)
-          darwin_bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*darwin_all*' | head -1)
+          darwin_zip=$(find dist -type f -name 'Frictionless-Launcher_Darwin_universal.zip' | head -1)
           windows_bin=$(find dist -type f -name 'Frictionless-Launcher.exe' -path '*windows*' | head -1)
 
-          if [ -z "$linux_bin" ] || [ -z "$darwin_bin" ] || [ -z "$windows_bin" ]; then
+          if [ -z "$linux_bin" ] || [ -z "$darwin_zip" ] || [ -z "$windows_bin" ]; then
             echo "missing an expected build artifact:"
             echo "  linux:   ${linux_bin:-MISSING}"
-            echo "  darwin:  ${darwin_bin:-MISSING}"
+            echo "  darwin:  ${darwin_zip:-MISSING}"
             echo "  windows: ${windows_bin:-MISSING}"
             find dist -type f
             exit 1
@@ -177,11 +193,13 @@ jobs:
           # actions/upload-artifact + download-artifact can strip the
           # executable bit off Unix binaries during their zip round-trip —
           # restore it before archiving, or the published binary fails with
-          # "permission denied" on Linux/macOS.
-          chmod +x "$linux_bin" "$darwin_bin"
+          # "permission denied" on Linux. The darwin .app bundle was already
+          # assembled, signed, and zipped in build-darwin (needs macOS-only
+          # tools), so it just needs copying into place here.
+          chmod +x "$linux_bin"
 
           tar -C "$(dirname "$linux_bin")" -czf release/Frictionless-Launcher_Linux_x86_64.tar.gz Frictionless-Launcher
-          tar -C "$(dirname "$darwin_bin")" -czf release/Frictionless-Launcher_Darwin_universal.tar.gz Frictionless-Launcher
+          cp "$darwin_zip" release/Frictionless-Launcher_Darwin_universal.zip
           (cd "$(dirname "$windows_bin")" && zip -j "$GITHUB_WORKSPACE/release/Frictionless-Launcher_Windows_x86_64.zip" Frictionless-Launcher.exe)
 
           cd release && sha256sum *.tar.gz *.zip > checksums.txt

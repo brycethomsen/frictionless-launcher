@@ -31,7 +31,11 @@ go.work.sum
 dist/
 frictionless-launcher
 game-launcher
+*.app
 
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# macOS Finder metadata
+.DS_Store
