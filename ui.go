@@ -2,17 +2,33 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"io"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"gopkg.in/yaml.v3"
+
+	"frictionless-launcher/internal/config"
+	"frictionless-launcher/internal/discovery"
+)
+
+// editorDialog{Width,Height} are the game editor's comfortable size — not
+// just a Resize() argument, but also what preferredWindowSize uses to set
+// the window's floor, so the main window can never shrink so far that
+// clampDialogSize is forced to squash the editor to fit it.
+const (
+	editorDialogWidth  float32 = 520
+	editorDialogHeight float32 = 600
+	dialogMargin       float32 = 40
 )
 
 type GameManagerUI struct {
@@ -23,10 +39,9 @@ type GameManagerUI struct {
 
 func newGameManagerUI(appRef *App) *GameManagerUI {
 	fyneApp := app.NewWithID("com.frictionless.launcher")
+	fyneApp.Settings().SetTheme(newFrictionlessTheme())
 
 	win := fyneApp.NewWindow("Frictionless Launcher")
-	win.Resize(fyne.NewSize(640, 640))
-	win.CenterOnScreen()
 	win.SetCloseIntercept(func() { win.Hide() })
 
 	ui := &GameManagerUI{
@@ -34,32 +49,88 @@ func newGameManagerUI(appRef *App) *GameManagerUI {
 		window:  win,
 		appRef:  appRef,
 	}
+
+	win.Resize(ui.preferredWindowSize())
+	win.CenterOnScreen()
+
 	return ui
 }
 
 // showLaunchCountdown shows a countdown window. Calls onDone(true) if countdown
 // completes, onDone(false) if the user cancels. Safe to call from any goroutine.
+//
+// The numeral and progress rule run from Glacier to Melt Amber as the seconds
+// tick down, hitting full warmth exactly at zero — the one moment this app
+// visualizes friction (ice) melting away as the game launches. The color
+// steps once per tick rather than easing between them: no deceleration
+// curve, same as the app's name.
 func (ui *GameManagerUI) showLaunchCountdown(gameName string, seconds int, onDone func(launch bool)) {
 	cancelled := make(chan struct{})
 
-	countdownLabel := widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	cancelBtn := widget.NewButton("Cancel", func() {
-		close(cancelled)
-	})
+	const barWidth float32 = 260
+	const barHeight float32 = 3
 
-	updateLabel := func(remaining int) {
-		countdownLabel.SetText(fmt.Sprintf("Time to play %s!\nLaunching in %d second%s...",
-			gameName, remaining, map[bool]string{true: "", false: "s"}[remaining == 1]))
+	eyebrow := canvas.NewText("Time to play", colorMuted)
+	eyebrow.Alignment = fyne.TextAlignCenter
+	eyebrow.TextSize = theme.CaptionTextSize()
+	eyebrow.TextStyle = fyne.TextStyle{Bold: true}
+
+	nameText := canvas.NewText(gameName, colorIce)
+	nameText.Alignment = fyne.TextAlignCenter
+	nameText.TextSize = theme.TextSubHeadingSize()
+	nameText.TextStyle = fyne.TextStyle{Bold: true}
+
+	numeral := canvas.NewText("", colorIce)
+	numeral.Alignment = fyne.TextAlignCenter
+	numeral.TextSize = 64
+	numeral.TextStyle = fyne.TextStyle{Monospace: true}
+
+	caption := canvas.NewText("", colorMuted)
+	caption.Alignment = fyne.TextAlignCenter
+	caption.TextSize = theme.CaptionTextSize()
+
+	track := canvas.NewRectangle(color.NRGBA{R: colorIce.R, G: colorIce.G, B: colorIce.B, A: 0x33})
+	track.Resize(fyne.NewSize(barWidth, barHeight))
+	track.Move(fyne.NewPos(0, 0))
+	fill := canvas.NewRectangle(colorIce)
+	fill.Resize(fyne.NewSize(barWidth, barHeight))
+	fill.Move(fyne.NewPos(0, 0))
+	bar := container.NewWithoutLayout(track, fill)
+	bar.Resize(fyne.NewSize(barWidth, barHeight))
+
+	cancelBtn := widget.NewButton("Cancel", func() { close(cancelled) })
+	cancelBtn.Importance = widget.LowImportance
+
+	update := func(remaining int) {
+		fraction := float64(remaining) / float64(seconds)
+		thawed := lerpColor(colorIce, colorMeltAmber, 1-fraction)
+
+		numeral.Text = fmt.Sprintf("%d", remaining)
+		numeral.Color = thawed
+		numeral.Refresh()
+
+		caption.Text = fmt.Sprintf("second%s until launch", map[bool]string{true: "", false: "s"}[remaining == 1])
+		caption.Refresh()
+
+		fill.FillColor = thawed
+		fill.Resize(fyne.NewSize(barWidth*float32(fraction), barHeight))
+		fill.Refresh()
 	}
-	updateLabel(seconds)
+	update(seconds)
 
-	content := container.NewBorder(nil, cancelBtn, nil, nil, countdownLabel)
+	content := container.NewBorder(nil, cancelBtn, nil, nil, container.NewVBox(
+		eyebrow,
+		nameText,
+		container.NewPadded(numeral),
+		caption,
+		container.NewCenter(bar),
+	))
 
 	var win fyne.Window
 	fyne.Do(func() {
 		win = ui.fyneApp.NewWindow("Frictionless")
 		win.SetContent(content)
-		win.Resize(fyne.NewSize(300, 120))
+		win.Resize(fyne.NewSize(340, 260))
 		win.SetFixedSize(true)
 		win.CenterOnScreen()
 		win.SetCloseIntercept(func() { close(cancelled) })
@@ -84,103 +155,66 @@ func (ui *GameManagerUI) showLaunchCountdown(gameName string, seconds int, onDon
 					return
 				}
 				r := remaining
-				fyne.Do(func() { updateLabel(r) })
+				fyne.Do(func() { update(r) })
 			}
 		}
 	}()
 }
 
 func (ui *GameManagerUI) show() {
+	// Resize on every reopen, not just first launch — a schedule that's
+	// gotten tighter or looser since the window was last shown (or the
+	// window being maximized-then-hidden-then-reopened) shouldn't reopen at
+	// a stale size with a band of empty space around the board. This has to
+	// happen before refresh(): buildScheduleBoard reads the window's
+	// current canvas size to decide how many hours to show, so the size
+	// needs to already be the one it's about to be shown at.
+	ui.window.Resize(ui.preferredWindowSize())
 	ui.refresh()
 	ui.window.Show()
 	ui.window.RequestFocus()
 }
 
+// vCenter vertically centers obj within whatever height its parent stretches
+// it to, without pulling it off the left edge horizontally. Fyne's Border and
+// HBox layouts stretch side content to the full row height but leave a plain
+// VBox pinned to the top of that space — list rows need every column on the
+// same vertical centerline, so this is applied consistently to all of them.
+func vCenter(obj fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewVBox(layout.NewSpacer(), obj, layout.NewSpacer())
+}
+
+// gameRow holds direct references to a list row's widgets. The row's nesting
+// (card surface + rim, centered columns, status line) got too deep for
+// reliable Objects[i].(*T) chasing, so the create/update closures below share
+// this instead of re-deriving structure from the generic fyne.CanvasObject
+// widget.List hands back.
+type gameRow struct {
+	card      *canvas.Rectangle
+	nameText  *canvas.Text
+	dot       *canvas.Circle
+	wordText  *canvas.Text
+	check     *widget.Check
+	editBtn   *widget.Button
+	deleteBtn *widget.Button
+}
+
+// refresh rebuilds the window content from the current config. The primary
+// view is the schedule board (board.go) — a literal week rather than a list
+// of records, since a schedule is what this app actually manages.
 func (ui *GameManagerUI) refresh() {
-	games := ui.appRef.config.Games
+	ui.window.SetContent(ui.buildScheduleBoard())
+}
 
-	var gameList *widget.List
-	gameList = widget.NewList(
-		func() int { return len(games) },
-		func() fyne.CanvasObject {
-			return container.NewBorder(
-				nil, nil,
-				widget.NewCheck("", nil),
-				container.NewHBox(
-					widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil),
-					widget.NewButtonWithIcon("", theme.DeleteIcon(), nil),
-				),
-				container.NewHBox(
-					widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-					widget.NewLabel(""),
-				),
-			)
-		},
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			if id >= len(games) {
-				return
-			}
-			game := games[id]
-
-			border := obj.(*fyne.Container)
-			left := border.Objects[0].(*fyne.Container)
-			enabledCheck := border.Objects[1].(*widget.Check)
-			right := border.Objects[2].(*fyne.Container)
-
-			left.Objects[0].(*widget.Label).SetText(game.GameName)
-			left.Objects[1].(*widget.Label).SetText("— " + gameStatusLabel(ui.appRef, game))
-
-			enabledCheck.Checked = game.Enabled
-			enabledCheck.Refresh()
-			enabledCheck.OnChanged = func(checked bool) {
-				ui.appRef.config.Games[id].Enabled = checked
-				ui.appRef.saveConfig()
-				fyne.Do(ui.refresh)
-			}
-
-			right.Objects[0].(*widget.Button).OnTapped = func() {
-				ui.showGameEditor(&game, false, func(updated Game) {
-					ui.appRef.config.Games[id] = updated
-					ui.appRef.saveConfig()
-				})
-			}
-			right.Objects[1].(*widget.Button).OnTapped = func() {
-				ui.showConfirmDialog("Delete Game",
-					fmt.Sprintf("Remove %s from auto-launch?", game.GameName),
-					"Delete", widget.DangerImportance,
-					func() {
-						ui.appRef.config.Games = append(
-							ui.appRef.config.Games[:id],
-							ui.appRef.config.Games[id+1:]...,
-						)
-						ui.appRef.saveConfig()
-						fyne.Do(ui.refresh)
-					},
-				)
-			}
-		},
-	)
-	// Rows have their own tap targets (checkbox/edit/delete); the list itself
-	// shouldn't retain a "selected" highlight when a row is tapped elsewhere.
-	gameList.OnSelected = func(id widget.ListItemID) {
-		gameList.Unselect(id)
-	}
-
-	addBtn := widget.NewButtonWithIcon("Add Game", theme.ContentAddIcon(), func() {
-		ui.showGamePicker(func(created Game) {
-			ui.appRef.config.Games = append(ui.appRef.config.Games, created)
-			ui.appRef.saveConfig()
-		})
-	})
-
-	exportBtn := widget.NewButtonWithIcon("Export", theme.DocumentSaveIcon(), func() {
+func (ui *GameManagerUI) exportButton() fyne.CanvasObject {
+	return widget.NewButtonWithIcon("Export", theme.DocumentSaveIcon(), func() {
 		d := dialog.NewFileSave(func(f fyne.URIWriteCloser, err error) {
 			if err != nil || f == nil {
 				return
 			}
 			defer f.Close()
 			data, err := yaml.Marshal(struct {
-				Games []Game `yaml:"games"`
+				Games []config.Game `yaml:"games"`
 			}{Games: ui.appRef.config.Games})
 			if err != nil {
 				dialog.ShowError(err, ui.window)
@@ -193,8 +227,10 @@ func (ui *GameManagerUI) refresh() {
 		d.SetFileName("frictionless-games.yaml")
 		d.Show()
 	})
+}
 
-	importBtn := widget.NewButtonWithIcon("Import", theme.FolderOpenIcon(), func() {
+func (ui *GameManagerUI) importButton() fyne.CanvasObject {
+	return widget.NewButtonWithIcon("Import", theme.FolderOpenIcon(), func() {
 		dialog.ShowFileOpen(func(f fyne.URIReadCloser, err error) {
 			if err != nil || f == nil {
 				return
@@ -206,7 +242,7 @@ func (ui *GameManagerUI) refresh() {
 				return
 			}
 			var imported struct {
-				Games []Game `yaml:"games"`
+				Games []config.Game `yaml:"games"`
 			}
 			if err := yaml.Unmarshal(data, &imported); err != nil {
 				dialog.ShowError(fmt.Errorf("invalid YAML: %w", err), ui.window)
@@ -227,22 +263,15 @@ func (ui *GameManagerUI) refresh() {
 			)
 		}, ui.window)
 	})
-
-	footer := container.NewVBox(
-		widget.NewSeparator(),
-		container.NewHBox(addBtn, exportBtn, importBtn),
-	)
-
-	ui.window.SetContent(container.NewBorder(nil, footer, nil, nil, gameList))
 }
 
-func (ui *GameManagerUI) showGamePicker(onSave func(Game)) {
-	discovered := discoverGames()
+func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
+	discovered := discovery.DiscoverGames()
 
 	if len(discovered) == 0 {
 		// No games found — fall straight through to manual entry
-		blank := Game{Enabled: true}
-		ui.showGameEditor(&blank, false, onSave)
+		blank := config.Game{Enabled: true}
+		ui.showGameEditor(&blank, false, onSave, nil)
 		return
 	}
 
@@ -266,18 +295,18 @@ func (ui *GameManagerUI) showGamePicker(onSave func(Game)) {
 	list.OnSelected = func(id widget.ListItemID) {
 		pickerDialog.Hide()
 		if id >= len(discovered) {
-			blank := Game{Enabled: true}
-			ui.showGameEditor(&blank, false, onSave)
+			blank := config.Game{Enabled: true}
+			ui.showGameEditor(&blank, false, onSave, nil)
 			return
 		}
 		d := discovered[id]
-		g := Game{
+		g := config.Game{
 			GameName:     d.Name,
 			GamePath:     d.GamePath,
 			LaunchMethod: d.LaunchMethod,
 			Enabled:      true,
 		}
-		ui.showGameEditor(&g, true, onSave)
+		ui.showGameEditor(&g, true, onSave, nil)
 	}
 
 	cancelBtn := widget.NewButton("Cancel", func() {
@@ -299,13 +328,12 @@ func (ui *GameManagerUI) showGamePicker(onSave func(Game)) {
 // margin) so a dialog can never force the window to grow past the screen.
 func clampDialogSize(win fyne.Window, want fyne.Size) fyne.Size {
 	avail := win.Canvas().Size()
-	const margin float32 = 40
 
 	size := want
-	if maxW := avail.Width - margin; maxW < size.Width {
+	if maxW := avail.Width - dialogMargin; maxW < size.Width {
 		size.Width = maxW
 	}
-	if maxH := avail.Height - margin; maxH < size.Height {
+	if maxH := avail.Height - dialogMargin; maxH < size.Height {
 		size.Height = maxH
 	}
 	return size
@@ -359,11 +387,47 @@ func (ui *GameManagerUI) findOverlappingGame(skipName string, days []string, sta
 	return ""
 }
 
+var hourOptions = func() []string {
+	opts := make([]string, 24)
+	for i := range opts {
+		opts[i] = fmt.Sprintf("%02d", i)
+	}
+	return opts
+}()
+
+// minuteOptions steps by 5 minutes — fine enough for any real schedule,
+// coarse enough to stay a short dropdown instead of 60 options to scroll.
+var minuteOptions = []string{"00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"}
+
+// newTimeSelect builds an hour+minute dropdown pair for one clock value,
+// replacing free-text "type HH:MM and hope it's valid" entry — picking from
+// a list can't produce a malformed time, so there's nothing left to
+// validate. Minutes snap down to the nearest 5 if the stored value (e.g.
+// hand-edited YAML) doesn't already land on one.
+func newTimeSelect(clock, defaultHour, defaultMinute string) (hourSel, minSel *widget.Select) {
+	h, m := defaultHour, defaultMinute
+	if isValidTimeFormat(clock) {
+		parts := strings.Split(clock, ":")
+		h = parts[0]
+		var mi int
+		fmt.Sscanf(parts[1], "%d", &mi)
+		m = fmt.Sprintf("%02d", mi-mi%5)
+	}
+	hourSel = widget.NewSelect(hourOptions, nil)
+	hourSel.SetSelected(h)
+	minSel = widget.NewSelect(minuteOptions, nil)
+	minSel.SetSelected(m)
+	return hourSel, minSel
+}
+
 // showGameEditor opens the game edit form. When methodLocked is true, the
 // Launch Method field is omitted entirely — the user already picked a
 // discovered game (and thus its launch method) in the picker dialog, so
-// re-asking here would just be redundant.
-func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave func(Game)) {
+// re-asking here would just be redundant. onDelete is nil when creating a
+// new game (nothing to delete yet); when non-nil, a Delete button appears —
+// the board has no separate delete icon of its own, so this is the one path
+// for removing a game that's currently on it.
+func (ui *GameManagerUI) showGameEditor(game *config.Game, methodLocked bool, onSave func(config.Game), onDelete func()) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetText(game.GameName)
 	nameEntry.SetPlaceHolder("e.g. Stardew Valley")
@@ -411,80 +475,112 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 	argsEntry.SetText(game.LaunchArgs)
 	argsEntry.SetPlaceHolder("optional launch arguments")
 
-	allDays := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+	allDays := weekDays
 
 	type scheduleRow struct {
-		checks []*widget.Check
-		start  *widget.Entry
-		end    *widget.Entry
+		selected            []bool
+		startHour, startMin *widget.Select
+		endHour, endMin     *widget.Select
 	}
 
 	schedulesBox := container.NewVBox()
 
-	var rows []scheduleRow
+	var rows []*scheduleRow
 
-	buildRow := func(s Schedule) {
-		checks := make([]*widget.Check, len(allDays))
-		grid := container.NewGridWithColumns(4)
+	buildRow := func(s config.Schedule) {
+		selected := make([]bool, len(allDays))
 		for i, day := range allDays {
-			checked := false
 			for _, d := range s.Days {
 				if strings.EqualFold(d, day) {
-					checked = true
+					selected[i] = true
 					break
 				}
 			}
-			checks[i] = widget.NewCheck(day, nil)
-			checks[i].Checked = checked
-			grid.Add(checks[i])
 		}
 
-		startE := widget.NewEntry()
-		startE.SetText(s.StartTime)
-		startE.SetPlaceHolder("19:00")
+		// One compact row of day toggles instead of a checkbox grid — every
+		// day is visible and scannable at once, and a filled chip reads at a
+		// glance the way a lit-up day does on a real weekly planner.
+		dayButtons := make([]*widget.Button, len(allDays))
+		var refreshDayButtons func()
+		for i, day := range allDays {
+			i := i
+			dayButtons[i] = widget.NewButton(day, func() {
+				selected[i] = !selected[i]
+				refreshDayButtons()
+			})
+		}
+		refreshDayButtons = func() {
+			for i, btn := range dayButtons {
+				if selected[i] {
+					btn.Importance = widget.HighImportance
+				} else {
+					btn.Importance = widget.MediumImportance
+				}
+				btn.Refresh()
+			}
+		}
+		refreshDayButtons()
 
-		endE := widget.NewEntry()
-		endE.SetText(s.EndTime)
-		endE.SetPlaceHolder("21:00")
+		startHour, startMin := newTimeSelect(s.StartTime, "19", "00")
+		endHour, endMin := newTimeSelect(s.EndTime, "21", "00")
 
-		row := scheduleRow{checks: checks, start: startE, end: endE}
+		row := &scheduleRow{selected: selected, startHour: startHour, startMin: startMin, endHour: endHour, endMin: endMin}
 		rows = append(rows, row)
-		idx := len(rows) - 1
 
-		timeRow := container.NewHBox(
-			container.NewGridWrap(fyne.NewSize(70, 36), startE),
-			widget.NewLabel("to"),
-			container.NewGridWrap(fyne.NewSize(70, 36), endE),
-		)
+		dayRow := container.NewHBox()
+		for _, btn := range dayButtons {
+			dayRow.Add(btn)
+		}
+
+		// Icon-only, same red-tinted-on-tap convention as every other delete
+		// action in the app, instead of a full-width "Remove" button — this
+		// is a small per-row action, not something that needs its own row.
+		removeBtn := widget.NewButtonWithIcon("", theme.NewColoredResource(theme.DeleteIcon(), theme.ColorNameError), nil)
+		removeBtn.Importance = widget.LowImportance
 
 		var rowBox *fyne.Container
-		removeBtn := widget.NewButton("Remove", func() {
+		removeBtn.OnTapped = func() {
 			if len(rows) <= 1 {
 				return
 			}
-			rows = append(rows[:idx], rows[idx+1:]...)
+			for i, r := range rows {
+				if r == row {
+					rows = append(rows[:i], rows[i+1:]...)
+					break
+				}
+			}
 			schedulesBox.Remove(rowBox)
 			schedulesBox.Refresh()
-		})
+		}
+
+		colon := func() fyne.CanvasObject {
+			return widget.NewLabelWithStyle(":", fyne.TextAlignCenter, fyne.TextStyle{Monospace: true})
+		}
+		timeRow := container.NewHBox(
+			startHour, colon(), startMin,
+			widget.NewLabel("to"),
+			endHour, colon(), endMin,
+		)
 
 		rowBox = container.NewVBox(
 			widget.NewSeparator(),
-			grid,
-			container.NewBorder(nil, nil, nil, removeBtn, timeRow),
+			container.NewBorder(nil, nil, nil, removeBtn, dayRow),
+			timeRow,
 		)
 		schedulesBox.Add(rowBox)
 	}
 
 	existing := game.Schedules
 	if len(existing) == 0 {
-		existing = []Schedule{{StartTime: "19:00", EndTime: "21:00"}}
+		existing = []config.Schedule{{StartTime: "19:00", EndTime: "21:00"}}
 	}
 	for _, s := range existing {
 		buildRow(s)
 	}
 
 	addWindowBtn := widget.NewButton("+ Add Time Window", func() {
-		buildRow(Schedule{StartTime: "19:00", EndTime: "21:00"})
+		buildRow(config.Schedule{StartTime: "19:00", EndTime: "21:00"})
 		schedulesBox.Refresh()
 	})
 
@@ -522,11 +618,11 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 			return
 		}
 
-		var schedules []Schedule
+		var schedules []config.Schedule
 		for ri, row := range rows {
 			selectedDays := []string{}
-			for i, c := range row.checks {
-				if c.Checked {
+			for i, on := range row.selected {
+				if on {
 					selectedDays = append(selectedDays, allDays[i])
 				}
 			}
@@ -534,24 +630,24 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 				dialog.ShowError(fmt.Errorf("time window %d: select at least one day", ri+1), ui.window)
 				return
 			}
-			if !isValidTimeFormat(row.start.Text) || !isValidTimeFormat(row.end.Text) {
-				dialog.ShowError(fmt.Errorf("time window %d: time must be in HH:MM format", ri+1), ui.window)
-				return
-			}
+			// No HH:MM format check needed here — start/end come from Select
+			// dropdowns, which can only ever hold a valid option.
+			startTime := row.startHour.Selected + ":" + row.startMin.Selected
+			endTime := row.endHour.Selected + ":" + row.endMin.Selected
 			for pi, prev := range schedules {
 				for _, pd := range prev.Days {
 					for _, nd := range selectedDays {
-						if strings.EqualFold(pd, nd) && scheduleOverlaps(row.start.Text, row.end.Text, prev.StartTime, prev.EndTime) {
+						if strings.EqualFold(pd, nd) && scheduleOverlaps(startTime, endTime, prev.StartTime, prev.EndTime) {
 							dialog.ShowError(fmt.Errorf("time windows %d and %d overlap on %s", pi+1, ri+1, nd), ui.window)
 							return
 						}
 					}
 				}
 			}
-			schedules = append(schedules, Schedule{
+			schedules = append(schedules, config.Schedule{
 				Days:      selectedDays,
-				StartTime: row.start.Text,
-				EndTime:   row.end.Text,
+				StartTime: startTime,
+				EndTime:   endTime,
 			})
 		}
 
@@ -563,7 +659,7 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 		}
 
 		d.Hide()
-		onSave(Game{
+		onSave(config.Game{
 			GameName:     nameEntry.Text,
 			GamePath:     pathEntry.Text,
 			LaunchMethod: methodSelect.Selected,
@@ -580,6 +676,20 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 		saveBtn,
 		widget.NewButton("Cancel", func() { d.Hide() }),
 	)
+	if onDelete != nil {
+		deleteBtn := widget.NewButton("Delete", func() {
+			ui.showConfirmDialog("Delete Game",
+				fmt.Sprintf("Remove %s from auto-launch?", game.GameName),
+				"Delete", widget.DangerImportance,
+				func() {
+					d.Hide()
+					onDelete()
+				},
+			)
+		})
+		deleteBtn.Importance = widget.DangerImportance
+		buttons.Add(deleteBtn)
+	}
 
 	scroll := container.NewVScroll(form)
 	scroll.SetMinSize(fyne.NewSize(480, 400))
@@ -587,17 +697,17 @@ func (ui *GameManagerUI) showGameEditor(game *Game, methodLocked bool, onSave fu
 	content := container.NewBorder(nil, buttons, nil, nil, scroll)
 
 	d = dialog.NewCustomWithoutButtons("Game Schedule", content, ui.window)
-	d.Resize(clampDialogSize(ui.window, fyne.NewSize(520, 600)))
+	d.Resize(clampDialogSize(ui.window, fyne.NewSize(editorDialogWidth, editorDialogHeight)))
 	d.Show()
 }
 
 // gameStatusLabel returns the short status shown next to a game's name in
 // the list: "Disabled", "No schedule", or its next upcoming launch time.
-func gameStatusLabel(app *App, game Game) string {
+func gameStatusLabel(app *App, game config.Game) string {
 	return gameStatusLabelAt(app, game, time.Now())
 }
 
-func gameStatusLabelAt(app *App, game Game, now time.Time) string {
+func gameStatusLabelAt(app *App, game config.Game, now time.Time) string {
 	if !game.Enabled {
 		return "Disabled"
 	}
@@ -605,4 +715,18 @@ func gameStatusLabelAt(app *App, game Game, now time.Time) string {
 		return "No schedule"
 	}
 	return app.nextScheduleLabelAt(game, now)
+}
+
+func isValidTimeFormat(t string) bool {
+	parts := strings.Split(t, ":")
+	if len(parts) != 2 {
+		return false
+	}
+
+	var hour, minute int
+	if _, err := fmt.Sscanf(t, "%d:%d", &hour, &minute); err != nil {
+		return false
+	}
+
+	return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
 }

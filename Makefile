@@ -84,6 +84,15 @@ mac-arm:
 	GOOS=darwin GOARCH=arm64 go build -o $(BINARY_NAME)-darwin-arm64 .
 	@echo "Build successful! Created $(BINARY_NAME)-darwin-arm64"
 
+# macOS .app bundle (native arch, for local testing — double-click it,
+# add it to Login Items, etc. Without this it's a bare Unix executable
+# that Finder can't launch properly.)
+mac-app: build
+	@echo "Building macOS .app bundle..."
+	mkdir -p dist
+	./scripts/build-macos-app.sh $(BINARY_NAME) dist dev
+	@echo "Bundle created at dist/Frictionless-Launcher.app"
+
 # Windows x86_64 (no console window)
 # Requires a Windows C cross-compiler for cgo (Fyne needs cgo for OpenGL/GLFW):
 #   macOS:  brew install mingw-w64
@@ -133,6 +142,7 @@ help:
 	@echo Platform-specific targets:
 	@echo "  mac-intel    - Build for macOS Intel (x86_64)"
 	@echo "  mac-arm      - Build for macOS Apple Silicon (ARM64)"
+	@echo "  mac-app      - Build a local .app bundle (native arch, for testing)"
 	@echo "  windows      - Build for Windows x86_64 (release)"
 	@echo "  windows-dev  - Build for Windows x86_64 (debug)"
 	@echo "  linux        - Build for Linux x86_64"
@@ -144,4 +154,4 @@ help:
 	@echo "  deps      - Update dependencies"
 	@echo "  help      - Show this help"
 
-.PHONY: all build run clean deps test test-ci test-verbose fmt fmt-check vet lint check mac-intel mac-arm windows windows-dev linux steamos all-platforms help
+.PHONY: all build run clean deps test test-ci test-verbose fmt fmt-check vet lint check mac-intel mac-arm mac-app windows windows-dev linux steamos all-platforms help

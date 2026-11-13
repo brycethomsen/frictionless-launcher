@@ -1,6 +1,9 @@
 //go:build darwin
 
-package main
+// Package platform wraps the bits of OS integration that differ per
+// platform: hiding the dock icon, reading the frontmost app, and sending
+// native notifications.
+package platform
 
 /*
 #cgo CFLAGS: -x objective-c
@@ -31,7 +34,9 @@ import (
 	"fyne.io/fyne/v2"
 )
 
-func setupDockBehavior(fyneApp fyne.App, onStarted func()) {
+// SetupDockBehavior hides the dock icon (NSApplicationActivationPolicyAccessory)
+// once the Fyne app lifecycle starts, then calls onStarted.
+func SetupDockBehavior(fyneApp fyne.App, onStarted func()) {
 	fyneApp.Lifecycle().SetOnStarted(func() {
 		C.setupApp()
 		go func() {
@@ -44,10 +49,14 @@ func setupDockBehavior(fyneApp fyne.App, onStarted func()) {
 	})
 }
 
-func getFrontmostApp() string {
+// GetFrontmostApp returns the name of the currently frontmost application,
+// or "" if none can be determined.
+func GetFrontmostApp() string {
 	return C.GoString(C.frontmostAppName())
 }
 
-func sendNativeNotification(title, body string) {
-	// Notifications require a bundled app — no-op when running as a plain binary.
+// SendNativeNotification shows a native notification with the given title
+// and body. Notifications require a bundled .app — this is a no-op when
+// running as a plain binary.
+func SendNativeNotification(title, body string) {
 }

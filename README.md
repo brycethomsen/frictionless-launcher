@@ -24,7 +24,7 @@ I built this app for myself, sometimes after a day of work I found it hard to ac
 
 ## Configuration
 
-The app uses a YAML config file. See [config.example.yaml](config.example.yaml) for a full example. You can edit games through the tray icon's "Manage Games..." window, or edit the YAML file directly.
+The app uses a YAML config file (see the Basic Example below). You can edit games through the tray icon's "Manage Games..." window, or edit the YAML file directly.
 
 ### Config file location
 
@@ -97,7 +97,6 @@ make build
 ### Project Structure
 
 - `main.go` - Core app logic, system tray, scheduling
-- `config.example.yaml` - Example configuration
 - `DESIGN.md` - Detailed design document and future plans
 - `TODO.md` - Known issues and planned features
 
