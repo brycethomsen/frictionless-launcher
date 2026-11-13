@@ -1,7 +1,10 @@
-package main
+package launcher
 
 import (
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +16,7 @@ import (
 func TestShouldLaunchGameAt_InsideWindow(t *testing.T) {
 	now := time.Date(2024, 1, 18, 20, 0, 0, 0, time.Local) // Thu 20:00
 	game := gameWithSchedule("Thu", "19:00", "21:00")
-	app := appWithGames([]config.Game{game})
+	app := appWithGames(t, []config.Game{game})
 	if !app.shouldLaunchGameAt(game, now) {
 		t.Error("expected true inside window with no prior launch")
 	}
@@ -22,7 +25,7 @@ func TestShouldLaunchGameAt_InsideWindow(t *testing.T) {
 func TestShouldLaunchGameAt_OutsideWindow(t *testing.T) {
 	now := time.Date(2024, 1, 18, 17, 0, 0, 0, time.Local) // Thu 17:00
 	game := gameWithSchedule("Thu", "19:00", "21:00")
-	app := appWithGames([]config.Game{game})
+	app := appWithGames(t, []config.Game{game})
 	if app.shouldLaunchGameAt(game, now) {
 		t.Error("expected false outside window")
 	}
@@ -31,7 +34,7 @@ func TestShouldLaunchGameAt_OutsideWindow(t *testing.T) {
 func TestShouldLaunchGameAt_AlreadyLaunched(t *testing.T) {
 	now := time.Date(2024, 1, 18, 20, 0, 0, 0, time.Local)
 	game := gameWithSchedule("Thu", "19:00", "21:00")
-	app := appWithGames([]config.Game{game})
+	app := appWithGames(t, []config.Game{game})
 	app.lastLaunchTime[game.GameName] = now.Add(-30 * time.Minute)
 	if app.shouldLaunchGameAt(game, now) {
 		t.Error("expected false when already launched in window")
@@ -46,194 +49,39 @@ func TestShouldLaunchGame_OutsideWindow(t *testing.T) {
 		GameName: "WrapTest", Enabled: true,
 		Schedules: []config.Schedule{{Days: []string{"Mon"}, StartTime: "00:01", EndTime: "00:02"}},
 	}
-	app := appWithGames([]config.Game{game})
+	app := appWithGames(t, []config.Game{game})
 	_ = app.shouldLaunchGame(game)
 }
 
 // ---- isInScheduleWindowAt (production method) -------------------------------
 
-func TestIsInScheduleWindowAt_Inside(t *testing.T) {
-	now := time.Date(2024, 1, 18, 20, 0, 0, 0, time.Local)
-	app := appWithGames(nil)
-	if !app.isInScheduleWindowAt(gameWithSchedule("Thu", "19:00", "21:00"), now) {
-		t.Error("expected true inside window")
-	}
-}
+// ---- launchedInCurrentWindow --------------------------------------------------
+// (The window math itself is tested in internal/schedule; these check the
+// wiring to the recorded launch times.)
 
-func TestIsInScheduleWindowAt_Outside(t *testing.T) {
-	now := time.Date(2024, 1, 18, 22, 0, 0, 0, time.Local)
-	app := appWithGames(nil)
-	if app.isInScheduleWindowAt(gameWithSchedule("Thu", "19:00", "21:00"), now) {
-		t.Error("expected false after window end")
-	}
-}
-
-func TestIsInScheduleWindowAt_BeforeStart(t *testing.T) {
-	now := time.Date(2024, 1, 18, 18, 59, 0, 0, time.Local) // Thursday 18:59
-	app := appWithGames(nil)
-	if app.isInScheduleWindowAt(gameWithSchedule("Thu", "19:00", "21:00"), now) {
-		t.Error("expected outside window (before start)")
-	}
-}
-
-func TestIsInScheduleWindowAt_WrongDay(t *testing.T) {
-	now := time.Date(2024, 1, 17, 19, 30, 0, 0, time.Local) // Wednesday 19:30
-	app := appWithGames(nil)
-	if app.isInScheduleWindowAt(gameWithSchedule("Thu", "19:00", "21:00"), now) {
-		t.Error("expected outside window (wrong day)")
-	}
-}
-
-func TestIsInScheduleWindowAt_NoSchedules(t *testing.T) {
-	now := time.Date(2024, 1, 18, 19, 30, 0, 0, time.Local)
-	game := config.Game{GameName: "X", Enabled: true}
-	app := appWithGames(nil)
-	if app.isInScheduleWindowAt(game, now) {
-		t.Error("game with no schedules should never be in window")
-	}
-}
-
-func TestIsInScheduleWindowAt_CaseInsensitiveDay(t *testing.T) {
-	now := time.Date(2024, 1, 18, 20, 0, 0, 0, time.Local) // Thursday
-	game := config.Game{
-		Enabled:   true,
-		Schedules: []config.Schedule{{Days: []string{"thu"}, StartTime: "19:00", EndTime: "21:00"}},
-	}
-	app := appWithGames(nil)
-	if !app.isInScheduleWindowAt(game, now) {
-		t.Error("day matching should be case-insensitive")
-	}
-}
-
-func TestIsInScheduleWindowAt_MultipleWindows(t *testing.T) {
-	game := config.Game{
-		Enabled: true,
-		Schedules: []config.Schedule{
-			{Days: []string{"Mon"}, StartTime: "08:00", EndTime: "10:00"},
-			{Days: []string{"Thu"}, StartTime: "19:00", EndTime: "21:00"},
-		},
-	}
-	app := appWithGames(nil)
-	if !app.isInScheduleWindowAt(game, time.Date(2024, 1, 15, 9, 0, 0, 0, time.Local)) {
-		t.Error("expected true for Mon window")
-	}
-	if !app.isInScheduleWindowAt(game, time.Date(2024, 1, 18, 20, 0, 0, 0, time.Local)) {
-		t.Error("expected true for Thu window")
-	}
-	if app.isInScheduleWindowAt(game, time.Date(2024, 1, 16, 9, 0, 0, 0, time.Local)) {
-		t.Error("expected false on Tuesday (no window)")
-	}
-}
-
-func TestIsInScheduleWindow_DelegatesCorrectly(t *testing.T) {
-	game := config.Game{
-		GameName: "WrapTest2", Enabled: true,
-		Schedules: []config.Schedule{{Days: []string{"Mon"}, StartTime: "00:01", EndTime: "00:02"}},
-	}
-	app := appWithGames([]config.Game{game})
-	// Consistent result with At variant using time.Now().
-	now := time.Now()
-	want := app.isInScheduleWindowAt(game, now)
-	got := app.isInScheduleWindow(game)
-	if got != want {
-		t.Errorf("isInScheduleWindow()=%v but isInScheduleWindowAt(now)=%v", got, want)
-	}
-}
-
-// ---- hasLaunchedInCurrentWindowAt --------------------------------------------
-
-func TestHasLaunchedInCurrentWindowAt_NoRecord(t *testing.T) {
-	app := appWithGames(nil)
+func TestLaunchedInCurrentWindow_NoRecord(t *testing.T) {
+	app := appWithGames(t, nil)
 	game := gameWithSchedule("Mon", "19:00", "21:00")
 	now := time.Date(2024, 1, 15, 20, 0, 0, 0, time.Local)
-	if app.hasLaunchedInCurrentWindowAt(game, now) {
+	if app.launchedInCurrentWindow(game, now) {
 		t.Error("no launch record should return false")
 	}
 }
 
-func TestHasLaunchedInCurrentWindowAt_LaunchedInsideWindow(t *testing.T) {
-	app := appWithGames(nil)
-	// Current time is Monday 19:30, last launch was Monday 19:05 — both inside the window.
-	now := time.Date(2024, 1, 15, 19, 30, 0, 0, time.Local) // Monday
-	game := config.Game{
-		GameName: "TestGame",
-		Enabled:  true,
-		Schedules: []config.Schedule{
-			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
-		},
-	}
-	launchTime := time.Date(now.Year(), now.Month(), now.Day(), 19, 5, 0, 0, now.Location())
-	app.lastLaunchTime["TestGame"] = launchTime
-
-	if !app.hasLaunchedInCurrentWindowAt(game, now) {
-		t.Error("launch was in window, should return true")
-	}
-}
-
-func TestHasLaunchedInCurrentWindowAt_LaunchedEarlierSameWindow(t *testing.T) {
-	app := appWithGames(nil)
-	game := config.Game{
-		GameName: "G", Enabled: true,
-		Schedules: []config.Schedule{{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"}},
-	}
-	now := time.Date(2024, 1, 15, 20, 55, 0, 0, time.Local) // still inside 19:00-21:00
-	app.lastLaunchTime["G"] = time.Date(2024, 1, 15, 20, 0, 0, 0, time.Local)
-	if !app.hasLaunchedInCurrentWindowAt(game, now) {
-		t.Error("launch at 20:00 falls within the still-open Mon 19:00-21:00 window; should return true")
-	}
-}
-
-// TestHasLaunchedInCurrentWindowAt_DifferentWindowSameDayNotSuppressed guards
-// against a real bug: a game with two windows on the same day (e.g. a
-// morning and an evening slot) launched during the first window must not
-// have that suppress the second, distinct window later that day.
-func TestHasLaunchedInCurrentWindowAt_DifferentWindowSameDayNotSuppressed(t *testing.T) {
-	app := appWithGames(nil)
-	game := config.Game{
-		GameName: "G", Enabled: true,
-		Schedules: []config.Schedule{
-			{Days: []string{"Mon"}, StartTime: "07:00", EndTime: "09:00"},
-			{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"},
-		},
-	}
-	app.lastLaunchTime["G"] = time.Date(2024, 1, 15, 7, 30, 0, 0, time.Local) // launched in the morning window
-	now := time.Date(2024, 1, 15, 19, 30, 0, 0, time.Local)                   // now inside the evening window
-	if app.hasLaunchedInCurrentWindowAt(game, now) {
-		t.Error("the morning launch must not suppress the distinct evening window")
-	}
-}
-
-func TestHasLaunchedInCurrentWindowAt_WrongDay(t *testing.T) {
-	app := appWithGames(nil)
-	game := config.Game{
-		GameName: "G", Enabled: true,
-		Schedules: []config.Schedule{{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"}},
-	}
-	now := time.Date(2024, 1, 16, 20, 0, 0, 0, time.Local) // Tuesday
-	app.lastLaunchTime["G"] = time.Date(2024, 1, 15, 20, 0, 0, 0, time.Local)
-	if app.hasLaunchedInCurrentWindowAt(game, now) {
-		t.Error("schedule is Mon only; today is Tue — should return false")
-	}
-}
-
-func TestHasLaunchedInCurrentWindowAt_BeforeWindowStart(t *testing.T) {
-	app := appWithGames(nil)
-	game := config.Game{
-		GameName: "G", Enabled: true,
-		Schedules: []config.Schedule{{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"}},
-	}
+func TestLaunchedInCurrentWindow_Recorded(t *testing.T) {
+	app := appWithGames(t, nil)
+	game := gameWithSchedule("Mon", "19:00", "21:00")
 	now := time.Date(2024, 1, 15, 20, 0, 0, 0, time.Local)
-	// Launch was at 18:00 — before window start
-	app.lastLaunchTime["G"] = time.Date(2024, 1, 15, 18, 0, 0, 0, time.Local)
-	if app.hasLaunchedInCurrentWindowAt(game, now) {
-		t.Error("launch before window start should return false")
+	app.lastLaunchTime[game.GameName] = now.Add(-10 * time.Minute)
+	if !app.launchedInCurrentWindow(game, now) {
+		t.Error("a launch recorded earlier in this window should count")
 	}
 }
 
 // ---- recordLaunch -------------------------------------------------------------
 
 func TestRecordLaunch(t *testing.T) {
-	app := appWithGames(nil)
+	app := appWithGames(t, nil)
 	game := config.Game{GameName: "RecordMe"}
 	before := time.Now()
 	app.recordLaunch(game)
@@ -350,9 +198,9 @@ func TestBuildLaunchCmd_Unknown_DefaultsDirect(t *testing.T) {
 
 func TestLaunchGameByStruct_EmptyPath(t *testing.T) {
 	// launchGameByStruct returns early with a log when GamePath is empty.
-	app := appWithGames(nil)
+	app := appWithGames(t, nil)
 	game := config.Game{GameName: "NullGame", GamePath: "", LaunchMethod: "direct"}
-	app.launchGameByStruct(game) // must not panic
+	app.Launch(game) // must not panic
 }
 
 func TestLaunchGameByStruct_SteamWarningPath(t *testing.T) {
@@ -364,8 +212,8 @@ func TestLaunchGameByStruct_SteamWarningPath(t *testing.T) {
 		LaunchMethod: "steam",
 		Enabled:      true,
 	}
-	app := appWithGames([]config.Game{game})
-	app.launchGameByStruct(game) // must not panic
+	app := appWithGames(t, []config.Game{game})
+	app.Launch(game) // must not panic
 }
 
 func TestLaunchGameByStruct_EpicWarningPath(t *testing.T) {
@@ -375,21 +223,21 @@ func TestLaunchGameByStruct_EpicWarningPath(t *testing.T) {
 		LaunchMethod: "epic",
 		Enabled:      true,
 	}
-	app := appWithGames([]config.Game{game})
-	app.launchGameByStruct(game) // must not panic
+	app := appWithGames(t, []config.Game{game})
+	app.Launch(game) // must not panic
 }
 
 // ---- isPlatformRunning (smoke test) --------------------------------------------
 
 func TestIsPlatformRunning_UnknownPlatform(t *testing.T) {
-	app := appWithGames(nil)
+	app := appWithGames(t, nil)
 	if app.isPlatformRunning("unknown_platform_xyz") {
 		t.Error("unknown platform should return false")
 	}
 }
 
 func TestIsPlatformRunning_KnownPlatforms_NoPanic(t *testing.T) {
-	app := appWithGames(nil)
+	app := appWithGames(t, nil)
 	// Just verify no panic; result depends on whether steam/epic are actually running
 	_ = app.isPlatformRunning("steam")
 	_ = app.isPlatformRunning("epic")
@@ -398,7 +246,7 @@ func TestIsPlatformRunning_KnownPlatforms_NoPanic(t *testing.T) {
 // ---- isGameRunning ---------------------------------------------------------------
 
 func TestIsGameRunning_DirectGame_NotRunning(t *testing.T) {
-	app := appWithGames([]config.Game{
+	app := appWithGames(t, []config.Game{
 		{GameName: "X", GamePath: "/nonexistent/xyz_game_definitely_not_running_12345", LaunchMethod: "direct", Enabled: true},
 	})
 	if app.isGameRunning() {
@@ -407,7 +255,7 @@ func TestIsGameRunning_DirectGame_NotRunning(t *testing.T) {
 }
 
 func TestIsGameRunning_NoDirectGames(t *testing.T) {
-	app := appWithGames([]config.Game{
+	app := appWithGames(t, []config.Game{
 		{GameName: "A", LaunchMethod: "steam", GamePath: "steam://rungameid/1"},
 	})
 	// Steam games don't use process detection
@@ -417,7 +265,7 @@ func TestIsGameRunning_NoDirectGames(t *testing.T) {
 }
 
 func TestIsGameRunning_NoGames(t *testing.T) {
-	app := appWithGames([]config.Game{})
+	app := appWithGames(t, []config.Game{})
 	if app.isGameRunning() {
 		t.Error("no games should return false")
 	}
@@ -426,12 +274,190 @@ func TestIsGameRunning_NoGames(t *testing.T) {
 // ---- getForegroundAppName --------------------------------------------------------
 
 func TestGetForegroundAppName_NoPanic(t *testing.T) {
-	app := appWithGames(nil)
+	app := appWithGames(t, nil)
 	name, err := app.getForegroundAppName()
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 	if name == "Frictionless" || name == "frictionless-launcher" {
 		t.Error("getForegroundAppName should filter out own app name")
+	}
+}
+
+// ---- autoLaunchGame -----------------------------------------------------------
+
+// stubCountdownPopup replaces the --countdown process for the duration of the
+// test, and reports no foreground app so the popup path is always taken. It
+// counts calls; if cancelAfter is >= 0 it cancels the
+// launch that long after being started, as if the user clicked Cancel.
+func stubCountdownPopup(t *testing.T, cancelAfter time.Duration) *int {
+	t.Helper()
+	var mu sync.Mutex
+	calls := 0
+	origFrontmost := frontmostApp
+	frontmostApp = func() string { return "" } // nothing in front: take the popup path
+	orig := countdownPopup
+	countdownPopup = func(gameName string, seconds int, onCancel func()) *exec.Cmd {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		if cancelAfter >= 0 {
+			time.AfterFunc(cancelAfter, onCancel)
+		}
+		return nil
+	}
+	t.Cleanup(func() { countdownPopup, frontmostApp = orig, origFrontmost })
+	return &calls
+}
+
+// launchableGame is a direct-launch game whose executable exits immediately.
+func launchableGame(t *testing.T) config.Game {
+	t.Helper()
+	exe, err := os.Executable() // this test binary; any real file works
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config.Game{
+		GameName:     "Launchable",
+		GamePath:     exe,
+		LaunchArgs:   "-test.run=^$",
+		LaunchMethod: "direct",
+		Enabled:      true,
+	}
+}
+
+func TestAutoLaunchGame_LaunchesAfterDelay(t *testing.T) {
+	stubCountdownPopup(t, -1)
+	game := launchableGame(t)
+	app := appWithGames(t, []config.Game{game})
+	app.Config().BootDelay = 1
+
+	start := time.Now()
+	app.autoLaunchGame(game)
+
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
+		t.Errorf("launched after %v, want about the 1s boot delay", elapsed)
+	}
+	if app.hasPendingLaunch() {
+		t.Error("pending launch should be cleared after launching")
+	}
+	if _, ok := app.lastLaunchTime[game.GameName]; !ok {
+		t.Error("a successful launch should be recorded")
+	}
+}
+
+func TestAutoLaunchGame_CancelFromPopup(t *testing.T) {
+	stubCountdownPopup(t, 50*time.Millisecond)
+	game := launchableGame(t)
+	game.GamePath = "/nonexistent/should-never-run"
+	app := appWithGames(t, []config.Game{game})
+	app.Config().BootDelay = 30
+
+	start := time.Now()
+	app.autoLaunchGame(game)
+
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("cancel took %v; it should end the countdown immediately", elapsed)
+	}
+	if app.hasPendingLaunch() {
+		t.Error("pending launch should be cleared after cancel")
+	}
+	// A cancel is recorded as a launch so the scheduler doesn't immediately
+	// start another countdown for the same window.
+	if _, ok := app.lastLaunchTime[game.GameName]; !ok {
+		t.Error("cancelled launch should be recorded to suppress the rest of the window")
+	}
+}
+
+func TestAutoLaunchGame_CancelFromTray(t *testing.T) {
+	stubCountdownPopup(t, -1)
+	game := launchableGame(t)
+	app := appWithGames(t, []config.Game{game})
+	app.Config().BootDelay = 30
+
+	done := make(chan struct{})
+	go func() {
+		app.autoLaunchGame(game)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !app.hasPendingLaunch() {
+		if time.Now().After(deadline) {
+			t.Fatal("launch never became pending")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := app.PendingLabel(); !ok {
+		t.Error("cancelLabel should report the pending launch")
+	}
+	app.CancelPending()
+	app.CancelPending() // a second click must not panic on a closed channel
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("autoLaunchGame did not return after tray cancel")
+	}
+	if app.hasPendingLaunch() {
+		t.Error("pending launch should be cleared after cancel")
+	}
+}
+
+func TestAutoLaunchGame_OnlyOnePending(t *testing.T) {
+	popups := stubCountdownPopup(t, -1)
+	game := launchableGame(t)
+	app := appWithGames(t, []config.Game{game})
+	app.Config().BootDelay = 30
+
+	done := make(chan struct{})
+	go func() {
+		app.autoLaunchGame(game)
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !app.hasPendingLaunch() {
+		if time.Now().After(deadline) {
+			t.Fatal("launch never became pending")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A second launch while one is pending must return immediately.
+	second := make(chan struct{})
+	go func() {
+		app.autoLaunchGame(game)
+		close(second)
+	}()
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Error("second autoLaunchGame should return immediately while one is pending")
+	}
+
+	app.CancelPending()
+	<-done
+	if *popups > 1 {
+		t.Errorf("countdown popup started %d times, want at most 1", *popups)
+	}
+}
+
+// ---- shouldLaunchGameAt ordering ----------------------------------------------
+
+func TestShouldLaunchGameAt_OutsideWindowSkipsProcessScan(t *testing.T) {
+	// A direct game makes isGameRunning enumerate processes. Outside the
+	// window, shouldLaunchGameAt must return false without needing to.
+	game := config.Game{
+		GameName: "Direct", GamePath: "/nonexistent/game", LaunchMethod: "direct", Enabled: true,
+		Schedules: []config.Schedule{{Days: []string{"Mon"}, StartTime: "19:00", EndTime: "21:00"}},
+	}
+	app := appWithGames(t, []config.Game{game})
+	monday8am := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local)
+	if app.shouldLaunchGameAt(game, monday8am) {
+		t.Error("should not launch outside the schedule window")
+	}
+	monday8pm := time.Date(2024, 1, 15, 20, 0, 0, 0, time.Local)
+	if !app.shouldLaunchGameAt(game, monday8pm) {
+		t.Error("should launch inside the window when not running and not yet launched")
 	}
 }

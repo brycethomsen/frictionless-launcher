@@ -1,74 +1,59 @@
+// Frictionless Launcher launches your games on a schedule.
+//
+// The binary runs as one of three processes, picked by its first argument
+// (see docs/DESIGN.md):
+//
+//	(no flag)              resident tray + scheduler — no Fyne, stays cheap
+//	--manage               the Manage Games window
+//	--countdown SECS GAME  the launch countdown; exits 3 if cancelled
 package main
 
 import (
-	_ "embed"
 	"log"
 	"os"
-	"time"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/driver/desktop"
+	"strconv"
 
 	"frictionless-launcher/internal/config"
-	"frictionless-launcher/internal/platform"
+	"frictionless-launcher/internal/launcher"
+	"frictionless-launcher/internal/logging"
+	"frictionless-launcher/internal/tray"
+	"frictionless-launcher/internal/ui"
 )
-
-//go:embed icon.png
-var iconData []byte
-
-type App struct {
-	config             *config.Config
-	configPath         string
-	logFile            *os.File
-	lastLaunchTime     map[string]time.Time
-	ui                 *GameManagerUI
-	desk               desktop.App
-	cancelLaunch       func()
-	pendingGameName    string
-	pendingSecondsLeft int
-}
 
 func main() {
 	exe, _ := os.Executable()
-	a := &App{
-		configPath:     getConfigPath(exe),
-		lastLaunchTime: make(map[string]time.Time),
-	}
+	store := config.NewStore(config.DefaultPath(exe), nil)
 
-	a.setupLogging()
-	defer a.closeLogFile()
+	args := os.Args[1:]
+	switch {
+	case len(args) >= 1 && args[0] == launcher.FlagManage:
+		log.SetPrefix("[manage] ")
+		closeLog := logging.Setup(false)
+		store.Load()
+		ui.RunManager(store)
+		closeLog()
 
-	a.loadConfig()
-	log.Printf("Config path: %s", a.configPath)
-	a.ui = newGameManagerUI(a)
-
-	go a.scheduleMonitor()
-	go a.watchConfigFile()
-
-	platform.SetupDockBehavior(a.ui.fyneApp, func() {
-		bootLaunched := false
-		for _, game := range a.config.Games {
-			if game.Enabled && a.shouldLaunchGame(game) {
-				log.Printf("Boot within schedule window for %s — queuing auto-launch", game.GameName)
-				go a.autoLaunchGameByName(game)
-				bootLaunched = true
-				break
-			}
+	case len(args) >= 3 && args[0] == launcher.FlagCountdown:
+		log.SetPrefix("[countdown] ")
+		closeLog := logging.Setup(false)
+		seconds, err := strconv.Atoi(args[1])
+		if err != nil {
+			log.Printf("Invalid countdown seconds %q: %v", args[1], err)
+			closeLog()
+			os.Exit(1)
 		}
-		if !bootLaunched {
-			log.Println("No games in schedule window at boot")
+		cancelled := ui.RunCountdown(args[2], seconds)
+		closeLog()
+		if cancelled {
+			os.Exit(launcher.ExitCountdownCancelled)
 		}
-	})
 
-	iconRes := fyne.NewStaticResource("icon.png", iconData)
-	a.ui.fyneApp.SetIcon(iconRes)
-
-	if desk, ok := a.ui.fyneApp.(desktop.App); ok {
-		a.desk = desk
-		desk.SetSystemTrayIcon(iconRes)
-		desk.SetSystemTrayMenu(a.buildTrayMenu(desk))
+	default:
+		closeLog := logging.Setup(true)
+		log.Printf("Config path: %s", store.Path())
+		app := launcher.New(store)
+		app.LoadConfig()
+		tray.Run(app, closeLog)
+		closeLog()
 	}
-
-	a.ui.fyneApp.Run()
-	a.closeLogFile()
 }

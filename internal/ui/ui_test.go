@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"os"
@@ -137,16 +137,24 @@ func newTestUI(t *testing.T, games []config.Game) *GameManagerUI {
 	a := fynetest.NewTempApp(t)
 	win := a.NewWindow("test")
 
-	appRef := &App{
-		configPath:     filepath.Join(dir, "config.yaml"),
-		lastLaunchTime: make(map[string]time.Time),
-		config:         &config.Config{Games: games, BootDelay: 10},
-	}
+	store := config.NewStore(filepath.Join(dir, "config.yaml"), &config.Config{Games: games, BootDelay: 10})
 
 	return &GameManagerUI{
 		fyneApp: a,
 		window:  win,
-		appRef:  appRef,
+		store:   store,
+	}
+}
+
+func gameWithSchedule(day, start, end string) config.Game {
+	return config.Game{
+		GameName:     "TestGame",
+		GamePath:     "steam://rungameid/1",
+		LaunchMethod: "steam",
+		Enabled:      true,
+		Schedules: []config.Schedule{
+			{Days: []string{day}, StartTime: start, EndTime: end},
+		},
 	}
 }
 
@@ -164,8 +172,8 @@ func TestGameManagerUI_FieldsWired(t *testing.T) {
 	if ui.fyneApp == nil {
 		t.Error("fyneApp should not be nil")
 	}
-	if ui.appRef == nil {
-		t.Error("appRef should not be nil")
+	if ui.store == nil {
+		t.Error("store should not be nil")
 	}
 }
 
@@ -406,11 +414,10 @@ func TestShowLaunchCountdown_CancelViaTap(t *testing.T) {
 }
 
 // ============================================================================
-// gameStatusLabel via real App struct (covers ui.go path)
+// statusLabelAt
 // ============================================================================
 
-func TestGameStatusLabel_ViaUI(t *testing.T) {
-	ui := newTestUI(t, nil)
+func TestStatusLabelAt_Cases(t *testing.T) {
 	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
 
 	cases := []struct {
@@ -430,9 +437,9 @@ func TestGameStatusLabel_ViaUI(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		got := gameStatusLabelAt(ui.appRef, c.game, now)
+		got := statusLabelAt(c.game, now)
 		if !strings.Contains(got, c.want) {
-			t.Errorf("gameStatusLabelAt(%v): want %q in %q", c.game.GameName, c.want, got)
+			t.Errorf("statusLabelAt(%v): want %q in %q", c.game.GameName, c.want, got)
 		}
 	}
 }
@@ -578,14 +585,14 @@ func TestRefresh_ToggleEnabledCheckbox_UpdatesAndPersists(t *testing.T) {
 	oldContent := ui.window.Content()
 	check.OnChanged(false)
 
-	if ui.appRef.config.Games[0].Enabled {
+	if ui.store.Current().Games[0].Enabled {
 		t.Error("expected game.Enabled to be false after unchecking")
 	}
 	if ui.window.Content() == oldContent {
 		t.Error("expected toggling the checkbox to refresh the window content, like every other mutation in this file")
 	}
 
-	data, err := os.ReadFile(ui.appRef.configPath)
+	data, err := os.ReadFile(ui.store.Path())
 	if err != nil {
 		t.Fatalf("reading saved config: %v", err)
 	}
@@ -669,90 +676,33 @@ func TestShowGameEditor_DeleteButton_ConfirmInvokesOnDelete(t *testing.T) {
 // scheduleOverlaps
 // ============================================================================
 
-func TestScheduleOverlaps_Overlapping(t *testing.T) {
-	cases := []struct {
-		s1, e1, s2, e2 string
-		want           bool
-		desc           string
-	}{
-		{"19:00", "21:00", "20:00", "22:00", true, "partial overlap"},
-		{"19:00", "21:00", "19:00", "21:00", true, "identical"},
-		{"18:00", "22:00", "19:00", "20:00", true, "B inside A"},
-		{"19:00", "21:00", "17:00", "23:00", true, "A inside B"},
-	}
-	for _, c := range cases {
-		got := scheduleOverlaps(c.s1, c.e1, c.s2, c.e2)
-		if got != c.want {
-			t.Errorf("[%s] scheduleOverlaps(%q,%q,%q,%q) = %v, want %v",
-				c.desc, c.s1, c.e1, c.s2, c.e2, got, c.want)
-		}
-	}
-}
-
-func TestScheduleOverlaps_NonOverlapping(t *testing.T) {
-	cases := []struct {
-		s1, e1, s2, e2 string
-		desc           string
-	}{
-		{"19:00", "21:00", "21:00", "23:00", "adjacent (no gap, no overlap)"},
-		{"19:00", "21:00", "22:00", "23:00", "gap between"},
-		{"22:00", "23:00", "19:00", "21:00", "reversed order"},
-	}
-	for _, c := range cases {
-		got := scheduleOverlaps(c.s1, c.e1, c.s2, c.e2)
-		if got {
-			t.Errorf("[%s] scheduleOverlaps(%q,%q,%q,%q) = true, want false",
-				c.desc, c.s1, c.e1, c.s2, c.e2)
-		}
-	}
-}
-
 // ============================================================================
 // isValidTimeFormat
 // ============================================================================
-
-func TestIsValidTimeFormat(t *testing.T) {
-	valid := []string{"00:00", "23:59", "19:00", "09:05", "0:0"}
-	for _, v := range valid {
-		if !isValidTimeFormat(v) {
-			t.Errorf("expected %q to be valid", v)
-		}
-	}
-
-	invalid := []string{"", "25:00", "12:60", "12", "12:00:00", "ab:cd", ":30", "12:"}
-	for _, v := range invalid {
-		if isValidTimeFormat(v) {
-			t.Errorf("expected %q to be invalid", v)
-		}
-	}
-}
 
 // ============================================================================
 // gameStatusLabelAt
 // ============================================================================
 
 func TestGameStatusLabelAt_Disabled(t *testing.T) {
-	app := appWithGames(nil)
 	g := config.Game{Enabled: false}
-	if got := gameStatusLabelAt(app, g, time.Now()); got != "Disabled" {
+	if got := statusLabelAt(g, time.Now()); got != "Disabled" {
 		t.Errorf("expected 'Disabled', got %q", got)
 	}
 }
 
 func TestGameStatusLabelAt_NoSchedule(t *testing.T) {
-	app := appWithGames(nil)
 	g := config.Game{Enabled: true}
-	if got := gameStatusLabelAt(app, g, time.Now()); got != "No schedule" {
+	if got := statusLabelAt(g, time.Now()); got != "No schedule" {
 		t.Errorf("expected 'No schedule', got %q", got)
 	}
 }
 
 func TestGameStatusLabelAt_NextLaunchToday(t *testing.T) {
-	app := appWithGames(nil)
 	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
 	g := gameWithSchedule("Mon", "19:00", "21:00")
 
-	got := gameStatusLabelAt(app, g, now)
+	got := statusLabelAt(g, now)
 	if !strings.HasPrefix(got, "Today ") {
 		t.Errorf("expected 'Today ...' label, got %q", got)
 	}
@@ -762,18 +712,16 @@ func TestGameStatusLabelAt_NextLaunchToday(t *testing.T) {
 }
 
 func TestGameStatusLabelAt_NextLaunchFutureDay(t *testing.T) {
-	app := appWithGames(nil)
 	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday
 	g := gameWithSchedule("Thu", "19:00", "21:00")
 
-	got := gameStatusLabelAt(app, g, now)
+	got := statusLabelAt(g, now)
 	if !strings.Contains(got, "Thu") || !strings.Contains(got, "19:00") {
 		t.Errorf("expected 'Thu' and '19:00' in label, got %q", got)
 	}
 }
 
 func TestGameStatusLabelAt_PicksEarliestOfMultipleSchedules(t *testing.T) {
-	app := appWithGames(nil)
 	now := time.Date(2024, 1, 15, 8, 0, 0, 0, time.Local) // Monday 08:00
 	g := config.Game{
 		Enabled: true,
@@ -783,7 +731,7 @@ func TestGameStatusLabelAt_PicksEarliestOfMultipleSchedules(t *testing.T) {
 		},
 	}
 
-	got := gameStatusLabelAt(app, g, now)
+	got := statusLabelAt(g, now)
 	if !strings.Contains(got, "12:00") {
 		t.Errorf("expected the earlier 12:00 window to win, got %q", got)
 	}
