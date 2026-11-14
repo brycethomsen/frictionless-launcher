@@ -102,7 +102,7 @@ func (app *App) Start() {
 		app.LoadConfig()
 		app.refreshTray()
 	})
-	app.launchIfInWindowAtBoot()
+	app.launchIfInWindowAtBoot(time.Now())
 }
 
 // Upcoming returns up to n enabled games ordered by their next window start.
@@ -112,15 +112,14 @@ func (app *App) Upcoming(n int) []config.Game {
 
 // launchIfInWindowAtBoot starts an auto-launch countdown if the app started up
 // inside one of the enabled games' schedule windows.
-func (app *App) launchIfInWindowAtBoot() {
-	for _, game := range app.Config().Games {
-		if game.Enabled && app.shouldLaunchGame(game) {
-			log.Printf("Boot within schedule window for %s — queuing auto-launch", game.GameName)
-			go app.autoLaunchGame(game)
-			return
-		}
+func (app *App) launchIfInWindowAtBoot(now time.Time) {
+	game, ok := app.dueGame(now)
+	if !ok {
+		log.Println("No games in schedule window at boot")
+		return
 	}
-	log.Println("No games in schedule window at boot")
+	log.Printf("Boot within schedule window for %s — queuing auto-launch", game.GameName)
+	go autoLaunch(app, game)
 }
 
 // PendingLabel returns the tray label for the pending launch, if there is one.

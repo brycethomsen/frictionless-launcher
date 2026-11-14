@@ -3,6 +3,7 @@ package launcher
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -459,5 +460,255 @@ func TestShouldLaunchGameAt_OutsideWindowSkipsProcessScan(t *testing.T) {
 	monday8pm := time.Date(2024, 1, 15, 20, 0, 0, 0, time.Local)
 	if !app.shouldLaunchGameAt(game, monday8pm) {
 		t.Error("should launch inside the window when not running and not yet launched")
+	}
+}
+
+// ---- runSchedule / dueGame ----------------------------------------------------
+
+// monday is a Monday in January 2024, at hh:mm:ss local time.
+func monday(hh, mm, ss int) time.Time {
+	return time.Date(2024, 1, 15, hh, mm, ss, 0, time.Local)
+}
+
+// stubAutoLaunch replaces autoLaunchGame for the duration of the test and
+// returns a channel that receives the name of every game the scheduler
+// decides to launch. Nothing is recorded as launched, so a game that is
+// still due is picked again on the next check.
+func stubAutoLaunch(t *testing.T) <-chan string {
+	t.Helper()
+	launched := make(chan string, 16)
+	orig := autoLaunch
+	autoLaunch = func(_ *App, game config.Game) { launched <- game.GameName }
+	t.Cleanup(func() { autoLaunch = orig })
+	return launched
+}
+
+// runTicks feeds ticks to app.runSchedule and returns once it has handled
+// all of them.
+func runTicks(app *App, ticks ...time.Time) {
+	ch := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		app.runSchedule(ch)
+		close(done)
+	}()
+	for _, tick := range ticks {
+		ch <- tick
+	}
+	close(ch)
+	<-done
+}
+
+// launchedNames collects what stubAutoLaunch received, waiting briefly for
+// the goroutines runSchedule starts.
+func launchedNames(launched <-chan string, want int) []string {
+	var names []string
+	timeout := time.After(2 * time.Second)
+	for len(names) < want {
+		select {
+		case n := <-launched:
+			names = append(names, n)
+		case <-timeout:
+			return names
+		}
+	}
+	// Give an unexpected extra launch a moment to show up.
+	select {
+	case n := <-launched:
+		names = append(names, n)
+	case <-time.After(50 * time.Millisecond):
+	}
+	return names
+}
+
+type countingTray struct {
+	mu        sync.Mutex
+	refreshes int
+}
+
+func (c *countingTray) Refresh() {
+	c.mu.Lock()
+	c.refreshes++
+	c.mu.Unlock()
+}
+func (c *countingTray) UpdateCountdown()           {}
+func (c *countingTray) Pulse(stop <-chan struct{}) {}
+
+func TestRunSchedule_LaunchesDueGame(t *testing.T) {
+	launched := stubAutoLaunch(t)
+	app := appWithGames(t, []config.Game{gameWithSchedule("Mon", "19:00", "21:00")})
+
+	runTicks(app, monday(20, 0, 0))
+
+	if got := launchedNames(launched, 1); len(got) != 1 || got[0] != "TestGame" {
+		t.Errorf("launched %v, want [TestGame]", got)
+	}
+}
+
+func TestRunSchedule_NothingDueOutsideWindow(t *testing.T) {
+	launched := stubAutoLaunch(t)
+	app := appWithGames(t, []config.Game{gameWithSchedule("Mon", "19:00", "21:00")})
+
+	runTicks(app, monday(18, 59, 0), monday(21, 1, 0))
+
+	if got := launchedNames(launched, 0); len(got) != 0 {
+		t.Errorf("launched %v outside the window, want nothing", got)
+	}
+}
+
+func TestRunSchedule_ChecksAtMostOncePerMinute(t *testing.T) {
+	launched := stubAutoLaunch(t)
+	tray := &countingTray{}
+	app := appWithGames(t, []config.Game{gameWithSchedule("Mon", "19:00", "21:00")})
+	app.SetTray(tray)
+
+	// Two ticks in the same minute, then one in the next.
+	runTicks(app, monday(20, 0, 1), monday(20, 0, 59), monday(20, 1, 0))
+
+	if got := launchedNames(launched, 2); len(got) != 2 {
+		t.Errorf("launched %d times, want 2 (one per distinct minute)", len(got))
+	}
+	tray.mu.Lock()
+	defer tray.mu.Unlock()
+	if tray.refreshes != 2 {
+		t.Errorf("tray refreshed %d times, want 2 (once per distinct minute)", tray.refreshes)
+	}
+}
+
+func TestRunSchedule_SameClockMinuteOnAnotherDayIsChecked(t *testing.T) {
+	launched := stubAutoLaunch(t)
+	game := gameWithSchedule("Mon", "19:00", "21:00")
+	game.Schedules[0].Days = []string{"Mon", "Tue"}
+	app := appWithGames(t, []config.Game{game})
+
+	tuesday := monday(20, 0, 0).AddDate(0, 0, 1)
+	runTicks(app, monday(20, 0, 0), tuesday)
+
+	if got := launchedNames(launched, 2); len(got) != 2 {
+		t.Errorf("launched %d times, want 2: 20:00 Tuesday is a different minute from 20:00 Monday", len(got))
+	}
+}
+
+func TestRunSchedule_SkipsWhileCountdownPending(t *testing.T) {
+	launched := stubAutoLaunch(t)
+	app := appWithGames(t, []config.Game{gameWithSchedule("Mon", "19:00", "21:00")})
+	app.pending = &pendingLaunch{gameName: "Other", cancelled: make(chan struct{})}
+
+	runTicks(app, monday(20, 0, 0))
+
+	if got := launchedNames(launched, 0); len(got) != 0 {
+		t.Errorf("launched %v while a countdown was pending, want nothing", got)
+	}
+}
+
+func TestRunSchedule_OneGamePerCheck(t *testing.T) {
+	launched := stubAutoLaunch(t)
+	first := gameWithSchedule("Mon", "19:00", "21:00")
+	first.GameName = "First"
+	second := gameWithSchedule("Mon", "19:00", "21:00")
+	second.GameName = "Second"
+	app := appWithGames(t, []config.Game{first, second})
+
+	runTicks(app, monday(20, 0, 0))
+
+	if got := launchedNames(launched, 1); len(got) != 1 || got[0] != "First" {
+		t.Errorf("launched %v, want only [First]", got)
+	}
+}
+
+func TestRunSchedule_SkipsDisabledAndAlreadyLaunched(t *testing.T) {
+	launched := stubAutoLaunch(t)
+	disabled := gameWithSchedule("Mon", "19:00", "21:00")
+	disabled.GameName = "Disabled"
+	disabled.Enabled = false
+	done := gameWithSchedule("Mon", "19:00", "21:00")
+	done.GameName = "AlreadyLaunched"
+	app := appWithGames(t, []config.Game{disabled, done})
+	app.lastLaunchTime[done.GameName] = monday(19, 30, 0)
+
+	runTicks(app, monday(20, 0, 0))
+
+	if got := launchedNames(launched, 0); len(got) != 0 {
+		t.Errorf("launched %v, want nothing (one disabled, one already launched this window)", got)
+	}
+}
+
+// ---- countdown popup process --------------------------------------------------
+
+// TestHelperProcess is not a real test: it is the stand-in --countdown
+// process for the tests below, exiting with FL_HELPER_EXIT's status.
+func TestHelperProcess(t *testing.T) {
+	code := os.Getenv("FL_HELPER_EXIT")
+	if code == "" {
+		return
+	}
+	n, _ := strconv.Atoi(code)
+	os.Exit(n)
+}
+
+// helperCmd returns a started process that exits with status code.
+func helperCmd(t *testing.T, code int) (*exec.Cmd, error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
+	cmd.Env = append(os.Environ(), "FL_HELPER_EXIT="+strconv.Itoa(code))
+	return cmd, cmd.Start()
+}
+
+func TestCountdownCancelled_ExitStatuses(t *testing.T) {
+	cases := []struct {
+		code int
+		want bool
+	}{
+		{0, false},
+		{1, false}, // a crash or error is not a cancel
+		{2, false},
+		{ExitCountdownCancelled, true},
+	}
+	for _, c := range cases {
+		cmd, err := helperCmd(t, c.code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := countdownCancelled(cmd.Wait()); got != c.want {
+			t.Errorf("exit %d: countdownCancelled = %v, want %v", c.code, got, c.want)
+		}
+	}
+	if countdownCancelled(nil) {
+		t.Error("a clean exit (nil error) must not count as cancelled")
+	}
+}
+
+func TestStartCountdownPopup_CancelExitCallsOnCancel(t *testing.T) {
+	var gotArgs []string
+	orig := startSelf
+	startSelf = func(args ...string) (*exec.Cmd, error) {
+		gotArgs = args
+		return helperCmd(t, ExitCountdownCancelled)
+	}
+	t.Cleanup(func() { startSelf = orig })
+
+	cancelled := make(chan struct{})
+	cmd := startCountdownPopup("Some Game", 15, func() { close(cancelled) })
+	if cmd == nil {
+		t.Fatal("startCountdownPopup returned nil for a process that started")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("onCancel was not called after the countdown process exited with the cancel status")
+	}
+	want := []string{FlagCountdown, "15", "Some Game"}
+	if strings.Join(gotArgs, "|") != strings.Join(want, "|") {
+		t.Errorf("started with %q, want %q", gotArgs, want)
+	}
+}
+
+func TestStartCountdownPopup_StartFailureReturnsNil(t *testing.T) {
+	orig := startSelf
+	startSelf = func(args ...string) (*exec.Cmd, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { startSelf = orig })
+
+	if cmd := startCountdownPopup("Some Game", 15, func() { t.Error("onCancel called") }); cmd != nil {
+		t.Error("want nil when the countdown process can't start")
 	}
 }

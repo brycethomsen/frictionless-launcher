@@ -6,7 +6,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -210,7 +209,7 @@ func (ui *GameManagerUI) buildScheduleBoard() fyne.CanvasObject {
 		rangeStart, rangeEnd = expandRangeForHeight(rangeStart, rangeEnd, float64(available), float64(boardMaxHourHeight))
 	}
 
-	todayName := time.Now().Weekday().String()[:3]
+	todayName := clock().Weekday().String()[:3]
 	todayIdx := dayIndex(todayName)
 
 	headerLayout := &dayHeaderLayout{gutter: boardGutterWidth, days: map[fyne.CanvasObject]int{}}
@@ -267,7 +266,7 @@ func (ui *GameManagerUI) buildScheduleBoard() fyne.CanvasObject {
 	// than clipped if the auto-fit range doesn't happen to cover right now
 	// (e.g. it's 3pm and everything's scheduled for the evening).
 	if todayIdx >= 0 {
-		now := time.Now()
+		now := clock()
 		nowHour := float64(now.Hour()) + float64(now.Minute())/60
 		if nowHour >= rangeStart && nowHour <= rangeEnd {
 			nowLine := canvas.NewRectangle(colorMeltAmber)
@@ -318,8 +317,11 @@ func (ui *GameManagerUI) buildScheduleBoard() fyne.CanvasObject {
 	}
 
 	const minBlockHours = 0.5
-	for col, items := range placementsByDay {
-		sort.Slice(items, func(i, j int) bool { return items[i].hourFrom < items[j].hourFrom })
+	// Day order, not map order, so the board is built the same way every
+	// time (the rendered snapshots in board_test.go depend on it).
+	for col := range weekDays {
+		items := placementsByDay[col]
+		sort.SliceStable(items, func(i, j int) bool { return items[i].hourFrom < items[j].hourFrom })
 		for i, p := range items {
 			renderEnd := p.hourTo
 			if renderEnd-p.hourFrom < minBlockHours {

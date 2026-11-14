@@ -253,6 +253,9 @@ func (t *trayController) Pulse(stop <-chan struct{}) {
 	}()
 }
 
+// startSelf is launcher.StartSelf, swappable in tests.
+var startSelf = launcher.StartSelf
+
 // openManager starts the --manage UI process, unless one is already open.
 func (t *trayController) openManager() {
 	t.mu.Lock()
@@ -261,7 +264,7 @@ func (t *trayController) openManager() {
 		log.Println("Manage Games window is already open")
 		return
 	}
-	cmd, err := launcher.StartSelf(launcher.FlagManage)
+	cmd, err := startSelf(launcher.FlagManage)
 	if err != nil {
 		log.Printf("Could not open Manage Games window: %v", err)
 		return

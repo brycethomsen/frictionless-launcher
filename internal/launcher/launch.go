@@ -46,18 +46,28 @@ func (app *App) getForegroundAppName() (string, error) {
 	return name, nil
 }
 
+// scheduleMonitor checks the schedule once a minute until the process exits.
 func (app *App) scheduleMonitor() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
+	app.runSchedule(ticker.C)
+}
 
+// autoLaunch is (*App).autoLaunchGame, swappable in tests so the scheduler's
+// decisions can be checked without running real countdowns.
+var autoLaunch = (*App).autoLaunchGame
+
+// runSchedule checks the schedule on every tick, at most once per minute,
+// and starts an auto-launch countdown when a game's window is due. It
+// returns when ticks is closed.
+func (app *App) runSchedule(ticks <-chan time.Time) {
 	var lastChecked time.Time
-
-	for now := range ticker.C {
-		// Skip if we already checked this minute
-		if now.Minute() == lastChecked.Minute() && now.Hour() == lastChecked.Hour() {
+	for now := range ticks {
+		minute := now.Truncate(time.Minute)
+		if minute.Equal(lastChecked) {
 			continue
 		}
-		lastChecked = now
+		lastChecked = minute
 
 		// The tray's "upcoming games" labels (see internal/tray) are only
 		// recomputed when the menu is rebuilt, which otherwise only happens
@@ -67,22 +77,28 @@ func (app *App) scheduleMonitor() {
 		// actual next one. (rebuild is a no-op when nothing changed.)
 		app.refreshTray()
 
-		// A countdown is already running (e.g. boot_delay is longer than the
-		// tick interval); don't start a second one.
-		if app.hasPendingLaunch() {
-			continue
-		}
-
-		for _, game := range app.Config().Games {
-			// shouldLaunchGameAt checks the cheap conditions (schedule window,
-			// already launched this window) before enumerating processes.
-			if game.Enabled && app.shouldLaunchGameAt(game, now) {
-				log.Printf("Schedule triggered for %s", game.GameName)
-				go app.autoLaunchGame(game)
-				break // Only launch one game per check cycle
-			}
+		if game, ok := app.dueGame(now); ok {
+			log.Printf("Schedule triggered for %s", game.GameName)
+			go autoLaunch(app, game)
 		}
 	}
+}
+
+// dueGame returns the first enabled game that should auto-launch at now.
+// Only one game launches per check, and none while a countdown is already
+// running (e.g. boot_delay is longer than the tick interval).
+func (app *App) dueGame(now time.Time) (config.Game, bool) {
+	if app.hasPendingLaunch() {
+		return config.Game{}, false
+	}
+	for _, game := range app.Config().Games {
+		// shouldLaunchGameAt checks the cheap conditions (schedule window,
+		// already launched this window) before enumerating processes.
+		if game.Enabled && app.shouldLaunchGameAt(game, now) {
+			return game, true
+		}
+	}
+	return config.Game{}, false
 }
 
 // autoLaunchGame counts down BootDelay seconds and then launches game, unless
@@ -183,23 +199,33 @@ wait:
 // countdownPopup is startCountdownPopup, swappable in tests.
 var countdownPopup = startCountdownPopup
 
+// startSelf is StartSelf, swappable in tests so the --countdown process can
+// be replaced by one that exits with a chosen status.
+var startSelf = StartSelf
+
 // startCountdownPopup starts the --countdown UI process and calls onCancel if
 // the user cancels from it. It returns nil if the process couldn't be started;
 // the launch then proceeds on the tray's timer with only the tray cancel item.
 func startCountdownPopup(gameName string, seconds int, onCancel func()) *exec.Cmd {
-	cmd, err := StartSelf(FlagCountdown, strconv.Itoa(seconds), gameName)
+	cmd, err := startSelf(FlagCountdown, strconv.Itoa(seconds), gameName)
 	if err != nil {
 		log.Printf("Could not show countdown window: %v", err)
 		return nil
 	}
 	go func() {
-		err := cmd.Wait()
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == ExitCountdownCancelled {
+		if countdownCancelled(cmd.Wait()) {
 			onCancel()
 		}
 	}()
 	return cmd
+}
+
+// countdownCancelled reports whether the --countdown process's exit status
+// (cmd.Wait's error) means the user cancelled. Anything else, including a
+// crash, means "no objection", so a broken popup can't block a launch.
+func countdownCancelled(waitErr error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(waitErr, &exitErr) && exitErr.ExitCode() == ExitCountdownCancelled
 }
 
 // buildLaunchCmd returns the exec.Cmd that would launch the given game on the

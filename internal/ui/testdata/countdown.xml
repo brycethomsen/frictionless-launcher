@@ -1,0 +1,27 @@
+<canvas padded size="340x260">
+	<content>
+		<container pos="4,4" size="332x252">
+			<container size="332x212">
+				<text alignment="center" bold color="disabled button" size="332x14" textSize="11">Time to play</text>
+				<text alignment="center" bold color="rgba(69,196,229,255)" pos="0,18" size="332x24" textSize="18">Spirit Island</text>
+				<container pos="0,47" size="332x82">
+					<text alignment="center" color="rgba(69,196,229,255)" monospace pos="4,4" size="324x74" textSize="64">30</text>
+				</container>
+				<text alignment="center" color="disabled button" pos="0,134" size="332x14" textSize="11">seconds until launch</text>
+				<container pos="0,152" size="332x1">
+					<container pos="165,0" size="1x1">
+						<rectangle fillColor="rgba(69,196,229,51)" size="260x3"/>
+						<rectangle fillColor="rgba(69,196,229,255)" size="260x3"/>
+					</container>
+				</container>
+			</container>
+			<widget pos="0,216" size="332x36" type="*widget.Button">
+				<rectangle radius="2" size="332x36"/>
+				<rectangle size="332x36"/>
+				<widget pos="142,8" size="46x19" type="*widget.RichText">
+					<text alignment="center" bold size="46x19">Cancel</text>
+				</widget>
+			</widget>
+		</container>
+	</content>
+</canvas>

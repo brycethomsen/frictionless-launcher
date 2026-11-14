@@ -39,3 +39,6 @@ game-launcher
 
 # macOS Finder metadata
 .DS_Store
+
+# Fyne markup snapshots that failed to match their testdata/ master
+testdata/failed/

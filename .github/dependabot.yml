@@ -10,9 +10,9 @@ updates:
       # and the code that wraps each of them is heavily unit-tested (config
       # load/save for yaml.v3, process detection for gopsutil) — patch/minor
       # bumps here auto-merge on green CI (see ci.yml's
-      # dependabot-auto-merge job). gopsutil's own per-OS backends are
-      # included too, since they move in lockstep with it and are exercised
-      # by the same tests.
+      # dependabot-auto-merge job). gopsutil's own dependencies (its per-OS
+      # backends, purego, go.yaml.in/yaml/v3) are included too, since they
+      # move in lockstep with it and are exercised by the same tests.
       go-dependencies-safe:
         patterns:
           - "github.com/fsnotify/fsnotify"
@@ -24,6 +24,8 @@ updates:
           - "github.com/tklauser/go-sysconf"
           - "github.com/tklauser/numcpus"
           - "github.com/yusufpapurcu/wmi"
+          - "github.com/ebitengine/purego"
+          - "go.yaml.in/yaml/v3"
           - "golang.org/x/sys"
       # Everything else — in practice, the fyne.io/fyne/v2 tree (rendering,
       # windowing, systray, text/image handling). This app is deeply
@@ -44,6 +46,8 @@ updates:
           - "github.com/tklauser/go-sysconf"
           - "github.com/tklauser/numcpus"
           - "github.com/yusufpapurcu/wmi"
+          - "github.com/ebitengine/purego"
+          - "go.yaml.in/yaml/v3"
           - "golang.org/x/sys"
 
   - package-ecosystem: "github-actions"

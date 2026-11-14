@@ -30,10 +30,14 @@ internal/
   platform/             per-OS code (CGo on macOS, build-tagged stubs elsewhere)
   discovery/            Steam / Epic install discovery
   assets/               embedded files (icon.png)
+  smoke/                smoke tests that start the real binary (build tag `smoke`)
 packaging/macos/        Info.plist + build-app.sh for the .app bundle
 docs/                   DESIGN.md (architecture, decisions), TODO.md (roadmap, bugs)
-.github/workflows/      ci.yml (test/vet/fmt on 3 OSes), release.yml (native builds + packaging)
-.goreleaser.yaml        build matrix used by release.yml
+.github/workflows/      test.yml (tests/vet/fmt/coverage/vulns on 3 OSes),
+                        build.yml (native release builds + smoke tests + packaging),
+                        ci.yml (both, on PRs and main; dependabot auto-merge),
+                        release.yml (both, then publish, on tags)
+.goreleaser.yaml        build matrix used by build.yml
 README.md  AGENTS.md     (no CLAUDE.md: Claude Code loads AGENTS.md when
                         a project has none, so don't add one)
 ```
@@ -77,6 +81,13 @@ config  ←  schedule  ←  launcher  ←  tray
   use `fynetest.NewTempApp` (headless). For code that calls the OS or spawns
   processes, use a package-level `var x = realFunc` seam and swap it in the
   test (see `countdownPopup` and `frontmostApp` in internal/launcher).
+  Time-dependent code takes the time as an argument or reads a swappable
+  clock (`clock` in internal/ui) so tests can fix it.
+- **Rendered snapshots:** `internal/ui/testdata/*.xml` are Fyne markup
+  masters for the board, game editor and countdown. A failing snapshot
+  writes what it got to `testdata/failed/` (gitignored). If the change is
+  intended, review the diff and copy it over the master; on a Fyne upgrade,
+  that diff is the thing to look at.
 - Keep comments explaining *why*, matching the existing style.
 
 ## Build artifacts and scratch files
@@ -92,10 +103,17 @@ config  ←  schedule  ←  launcher  ←  tray
 ```sh
 gofmt -s -l .            # must print nothing
 go vet ./...
+go mod tidy -diff        # must print nothing
 go test -race ./...
+make smoke               # real binary in each mode; opens windows briefly
 # Windows cross-compile from macOS (needs: brew install mingw-w64)
 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -o /tmp/fl.exe .
 ```
 
 Fyne needs cgo on every OS. On Linux, CI installs
 `gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev`.
+
+CI also enforces per-package coverage floors (in test.yml; lower one only
+deliberately) and runs govulncheck. The main branch ruleset requires the
+"CI passed" check, so nothing merges, including dependabot's auto-merges,
+unless tests and the full release build with smoke tests pass.

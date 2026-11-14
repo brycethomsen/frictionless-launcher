@@ -8,69 +8,33 @@ on:
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    # Windows runners default `run:` steps to pwsh, which mis-tokenizes
-    # `-coverprofile=coverage.out` into two separate arguments. bash (via
-    # Git Bash, always present on windows-latest) parses it correctly and
-    # keeps behavior consistent across all three OSes.
-    defaults:
-      run:
-        shell: bash
+    uses: ./.github/workflows/test.yml
+
+  # A full release build and smoke test of every binary, without publishing.
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      release: false
+
+  # The one check the main branch ruleset requires: it passes only if every
+  # job above did. Requiring this instead of each job by name means adding
+  # or renaming jobs doesn't silently drop them from what gates a merge.
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [test, build]
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # Windows Defender's real-time scanning makes Go/cgo builds dramatically
-      # slower on windows-latest (every module file, every object file gets
-      # scanned as it's written). Safe here — these are single-use, ephemeral
-      # runner VMs, not a persistent machine.
-      - name: Disable Windows Defender real-time scanning
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-
-      - name: Download dependencies
-        run: go mod download
-
-      # Fyne needs cgo + GLFW's X11 dependency to even compile on Linux,
-      # let alone run — same packages release.yml's build-linux job installs.
-      - name: Install Fyne Linux build dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
-
-      - name: Run tests with coverage
-        run: go test -v -race -coverprofile=coverage.out ./...
-
-      # Linux and macOS only. On Windows, vet can't reuse the -race test
-      # build, so it recompiles all of Fyne's cgo code (GLFW, OpenGL) with
-      # MinGW a second time -- about 6 of the job's ~14 minutes. Vet's
-      # findings are nearly all OS-independent, and the Windows-only Go
-      # files are still compiled and tested by the step above.
-      - name: Run go vet
-        if: matrix.os != 'windows-latest'
-        run: go vet ./...
-
-      - name: Check formatting (Linux only)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Check every job succeeded
         run: |
-          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-            echo "The following files are not formatted:"
-            gofmt -s -l .
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "true" ]; then
+            echo "A required job did not succeed: ${{ toJSON(needs) }}"
             exit 1
           fi
 
   dependabot-auto-merge:
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [ci-passed]
     # Only run on Dependabot PRs after all checks pass
     if: github.actor == 'dependabot[bot]' && github.event_name == 'pull_request'
     permissions:
@@ -85,9 +49,11 @@ jobs:
 
       # Allowlisted by dependency group, not just semver level: the "fyne"
       # group (see dependabot.yml) covers a GUI framework this app is deeply
-      # integrated with, and its live-wiring code isn't covered by tests the
-      # way the rest of the app is — those PRs always wait for manual review,
-      # even on a patch bump.
+      # integrated with. Its PRs always wait for manual review, even on a
+      # patch bump; the rendered snapshots in internal/ui and the smoke
+      # tests in build.yml are what that review starts from.
+      # --auto hands the merge to GitHub, which still waits for the
+      # ruleset's required check.
       - name: Auto-merge patch and minor updates in the safe dependency groups
         if: |
           (steps.meta.outputs.dependency-group == 'go-dependencies-safe' ||

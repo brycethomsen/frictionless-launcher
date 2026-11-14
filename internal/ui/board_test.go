@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -490,4 +491,62 @@ func TestExpandRangeForHeight_NeverExceedsAbsoluteDayBounds(t *testing.T) {
 		t.Errorf("expandRangeForHeight() = (%v, %v), want the full day bounds (%v, %v)",
 			start, end, boardAbsoluteStartHour, boardAbsoluteEndHour)
 	}
+}
+
+// ---- rendered snapshots -------------------------------------------------------
+//
+// These compare the rendered widget tree against masters in testdata/. They
+// exist to catch a Fyne upgrade quietly changing how the app looks: a diff
+// here on a Fyne bump PR is the thing to review by eye. When a change is
+// intended, copy the markup the failure reports (testdata/failed/...) over
+// the master.
+
+// snapshotTime is a fixed Wednesday evening, so today's column and the "now"
+// line land in the same place on every run.
+var snapshotTime = time.Date(2024, 1, 17, 19, 30, 0, 0, time.Local)
+
+// newSnapshotUI is newTestUI with the app's real theme and a fixed clock.
+func newSnapshotUI(t *testing.T, games []config.Game) *GameManagerUI {
+	t.Helper()
+	orig := clock
+	clock = func() time.Time { return snapshotTime }
+	t.Cleanup(func() { clock = orig })
+	ui := newTestUI(t, games)
+	ui.fyneApp.Settings().SetTheme(newFrictionlessTheme())
+	return ui
+}
+
+// snapshotGames covers each way a game can appear: on the board across
+// several days, on the board for one day, and in the off-board list.
+func snapshotGames() []config.Game {
+	return []config.Game{
+		{
+			GameName: "Spirit Island", GamePath: "steam://rungameid/1236720", LaunchMethod: "steam", Enabled: true,
+			Schedules: []config.Schedule{{Days: []string{"Mon", "Wed", "Fri"}, StartTime: "19:00", EndTime: "21:00"}},
+		},
+		{
+			GameName: "Fortnite", GamePath: "com.epicgames.launcher://apps/Fortnite?action=launch", LaunchMethod: "epic", Enabled: true,
+			Schedules: []config.Schedule{{Days: []string{"Sat"}, StartTime: "14:00", EndTime: "16:30"}},
+		},
+		{
+			GameName: "Paused Game", GamePath: "/Applications/Paused.app", LaunchMethod: "direct", Enabled: false,
+			Schedules: []config.Schedule{{Days: []string{"Tue"}, StartTime: "20:00", EndTime: "22:00"}},
+		},
+	}
+}
+
+func TestBoard_Snapshot(t *testing.T) {
+	ui := newSnapshotUI(t, snapshotGames())
+	// A fixed size rather than preferredWindowSize, so this pins rendering
+	// only; window sizing has its own tests above.
+	ui.window.Resize(fyne.NewSize(900, 640))
+	ui.refresh()
+	fynetest.AssertRendersToMarkup(t, "board.xml", ui.window.Canvas())
+}
+
+func TestBoard_EmptySnapshot(t *testing.T) {
+	ui := newSnapshotUI(t, nil)
+	ui.window.Resize(fyne.NewSize(900, 640))
+	ui.refresh()
+	fynetest.AssertRendersToMarkup(t, "board_empty.xml", ui.window.Canvas())
 }
