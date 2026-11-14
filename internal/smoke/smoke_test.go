@@ -8,7 +8,10 @@
 // crashes, exits early, or logs a Fyne error or panic.
 //
 // They need a display (CI uses xvfb on Linux). Set SMOKE_BINARY to test an
-// already-built binary; otherwise the current source is built.
+// already-built binary; otherwise the current source is built. Set
+// SMOKE_NO_OPENGL=1 where no OpenGL context can be created (GitHub's
+// Apple-silicon macOS runners are GPU-less VMs, where GLFW finds no pixel
+// format): the window modes are then skipped and only the tray is tested.
 
 package smoke
 
@@ -129,7 +132,16 @@ func staysUp(t *testing.T, cmd *exec.Cmd, d time.Duration) {
 	}
 }
 
+// needsOpenGL skips a test of a Fyne window mode where OpenGL is unavailable.
+func needsOpenGL(t *testing.T) {
+	t.Helper()
+	if os.Getenv("SMOKE_NO_OPENGL") != "" {
+		t.Skip("SMOKE_NO_OPENGL is set: this machine can't create an OpenGL context")
+	}
+}
+
 func TestSmoke_Countdown(t *testing.T) {
+	needsOpenGL(t)
 	env := newSmokeEnv(t)
 	cmd := env.command(launcher.FlagCountdown, "2", "Smoke Test")
 	start := time.Now()
@@ -163,6 +175,7 @@ func TestSmoke_Countdown(t *testing.T) {
 }
 
 func TestSmoke_ManageWindow(t *testing.T) {
+	needsOpenGL(t)
 	env := newSmokeEnv(t)
 	staysUp(t, env.command(launcher.FlagManage), 8*time.Second)
 	env.checkLog(t)
