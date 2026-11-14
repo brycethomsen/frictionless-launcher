@@ -19,21 +19,12 @@
 - [x] Schedule overlap validation — UI blocks saving two games with overlapping day/time windows
 - [x] macOS dock icon hidden — `NSApplicationActivationPolicyAccessory` via CGo
 - [x] Cross-platform build stubs (`dock_darwin.go` / `dock_other.go`)
+- [x] macOS release is a real `.app` bundle (`LSUIElement`, icon, universal binary) — `packaging/macos/build-app.sh`, shipped in v1.0.0
+- [x] Resident tray process no longer runs Fyne/OpenGL — idle CPU ~0, ~20 MB (v1.0.0)
 
 ## Bugs
 
 - [ ] Steam launches to foreground on macOS despite `-g` flag
-- [ ] macOS release binary isn't a real `.app` bundle — Finder shows it as
-      "Unix Executable File" and double-click opens it through Terminal.app
-      instead of launching silently into the tray. Blocks any normal user
-      from just downloading and double-clicking the release. Un-released
-      v0.3.0 over this on 2026-07-17; needs fixing before re-cutting it.
-      Needs: `Contents/MacOS/Frictionless-Launcher`, `Contents/Info.plist`
-      (with `LSUIElement` to declare "no dock icon" properly instead of only
-      the runtime `NSApplicationActivationPolicyAccessory` call),
-      `Contents/Resources/icon.icns`, and a `release.yml` packaging change to
-      build/zip the bundle instead of the bare binary. Also the prerequisite
-      for native notifications noted below.
 
 ## Up Next
 
@@ -45,7 +36,7 @@
 
 - [ ] App blocklist — don't launch if a specific app is frontmost (e.g. Zoom, Plex). Consider: name-based text entry vs running process discovery vs file browser. Also reconsider whether current "any foreground app blocks" behavior should become "only blocked apps block" — more useful in practice.
 
-- [ ] Native notifications (`UNUserNotificationCenter`) — blocked on the macOS app bundle fix above; tray cancel label is the current fallback
+- [ ] Native notifications (`UNUserNotificationCenter`) — now unblocked (the `.app` bundle exists); tray cancel label is the current fallback
 
 - [x] Import/export — export game schedules as YAML via file-save dialog, import via file-open dialog with replace confirmation
 
