@@ -1,12 +1,16 @@
 package logging
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"frictionless-launcher/internal/version"
 )
 
 // ---- Dir ---------------------------------------------------------------------
@@ -119,7 +123,8 @@ func TestSetup_WritesToFileAndCloses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("log file not created: %v", err)
 	}
-	for _, want := range []string{"started", "hello from test", "shutting down"} {
+	startLine := fmt.Sprintf("=== Frictionless Launcher %s (%s/%s) started ===", version.String(), runtime.GOOS, runtime.GOARCH)
+	for _, want := range []string{startLine, "hello from test", "shutting down"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("log file missing %q:\n%s", want, data)
 		}

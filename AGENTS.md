@@ -27,6 +27,7 @@ internal/
   tray/                 systray icon + menu; implements launcher.Tray
   ui/                   ALL Fyne code: schedule board, dialogs, countdown window, theme
   logging/              log file setup and rotation
+  version/              build version for the log (set by goreleaser, else dev+commit)
   platform/             per-OS code (CGo on macOS, build-tagged stubs elsewhere)
   discovery/            Steam / Epic install discovery
   assets/               embedded files (icon.png)
@@ -57,8 +58,8 @@ config  ←  schedule  ←  launcher  ←  tray
 - **The tray process must never depend on Fyne.** It is resident all day.
   Fyne's driver creates an OpenGL context and a 60 Hz event loop at startup,
   which is the background cost the tray/UI process split removed.
-  `config`, `schedule`, `launcher`, `tray`, `logging`, `platform` and
-  `assets` must not import `fyne.io/fyne/v2/...`;
+  `config`, `schedule`, `launcher`, `tray`, `logging`, `version`,
+  `platform` and `assets` must not import `fyne.io/fyne/v2/...`;
   `internal/tray/deps_test.go` fails if they do. `fyne.io/systray` is fine
   (it's a separate module).
 - `ui` must not import `launcher` or `tray`. The UI process talks to the

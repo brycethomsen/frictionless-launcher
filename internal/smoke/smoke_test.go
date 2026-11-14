@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -137,6 +138,27 @@ func (e smokeEnv) checkLog(t *testing.T) {
 		if strings.Contains(log, bad) {
 			t.Errorf("app log contains %q", bad)
 		}
+	}
+	checkVersionLine(t, log)
+}
+
+// startLine matches the log's first line for each process, capturing the
+// version it reports.
+var startLine = regexp.MustCompile(`=== Frictionless Launcher (\S+) \(\w+/\w+\) started ===`)
+
+// checkVersionLine fails the test unless the log names the build's version.
+// A release build (SMOKE_BINARY, built by goreleaser) must report the
+// version goreleaser stamped in, not the "dev" fallback: that would mean
+// the build-time setting no longer reaches internal/version.
+func checkVersionLine(t *testing.T, log string) {
+	t.Helper()
+	m := startLine.FindStringSubmatch(log)
+	if m == nil {
+		t.Error("app log has no versioned startup line")
+		return
+	}
+	if os.Getenv("SMOKE_BINARY") != "" && strings.HasPrefix(m[1], "dev") {
+		t.Errorf("release build reports version %q; the build-time version wasn't applied", m[1])
 	}
 }
 
