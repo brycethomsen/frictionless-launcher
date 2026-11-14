@@ -1,0 +1,103 @@
+<canvas padded size="900x640">
+	<content>
+		<container pos="4,4" size="892x632">
+			<container size="892x587">
+				<container pos="0,32" size="892x555">
+					<container size="892x555">
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,-6" size="852x1"/>
+						<text color="disabled button" monospace pos="2,-4" size="36x14" textSize="11">07</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,26" size="852x1"/>
+						<text color="disabled button" monospace pos="2,28" size="36x14" textSize="11">08</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,59" size="852x1"/>
+						<text color="disabled button" monospace pos="2,61" size="36x14" textSize="11">09</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,92" size="852x1"/>
+						<text color="disabled button" monospace pos="2,94" size="36x14" textSize="11">10</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,125" size="852x1"/>
+						<text color="disabled button" monospace pos="2,127" size="36x14" textSize="11">11</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,158" size="852x1"/>
+						<text color="disabled button" monospace pos="2,160" size="36x14" textSize="11">12</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,191" size="852x1"/>
+						<text color="disabled button" monospace pos="2,193" size="36x14" textSize="11">13</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,224" size="852x1"/>
+						<text color="disabled button" monospace pos="2,226" size="36x14" textSize="11">14</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,257" size="852x1"/>
+						<text color="disabled button" monospace pos="2,259" size="36x14" textSize="11">15</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,290" size="852x1"/>
+						<text color="disabled button" monospace pos="2,292" size="36x14" textSize="11">16</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,323" size="852x1"/>
+						<text color="disabled button" monospace pos="2,325" size="36x14" textSize="11">17</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,356" size="852x1"/>
+						<text color="disabled button" monospace pos="2,358" size="36x14" textSize="11">18</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,389" size="852x1"/>
+						<text color="disabled button" monospace pos="2,391" size="36x14" textSize="11">19</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,422" size="852x1"/>
+						<text color="disabled button" monospace pos="2,424" size="36x14" textSize="11">20</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,455" size="852x1"/>
+						<text color="disabled button" monospace pos="2,457" size="36x14" textSize="11">21</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,488" size="852x1"/>
+						<text color="disabled button" monospace pos="2,490" size="36x14" textSize="11">22</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,521" size="852x1"/>
+						<text color="disabled button" monospace pos="2,523" size="36x14" textSize="11">23</text>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,555" size="852x1"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="40,0" size="1x555"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="161,0" size="1x555"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="283,0" size="1x555"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="405,0" size="1x555"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="526,0" size="1x555"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="648,0" size="1x555"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="770,0" size="1x555"/>
+						<rectangle fillColor="rgba(128,140,147,34)" pos="892,0" size="1x555"/>
+						<rectangle fillColor="rgba(63,190,122,18)" pos="283,0" size="121x555"/>
+						<rectangle fillColor="rgba(255,138,66,255)" pos="283,406" size="121x2"/>
+					</container>
+					<container size="892x555">
+						<container pos="325,255" size="241x43">
+							<text alignment="center" bold size="241x24" textSize="18">Nothing scheduled yet</text>
+							<text alignment="center" color="disabled button" pos="0,28" size="241x14" textSize="11">Add a game below and give it a launch window</text>
+						</container>
+					</container>
+				</container>
+				<container size="892x28">
+					<text alignment="center" bold pos="40,0" size="121x28">Mon</text>
+					<text alignment="center" bold pos="161,0" size="121x28">Tue</text>
+					<text alignment="center" bold color="focus" pos="283,0" size="121x28">Wed</text>
+					<text alignment="center" bold pos="405,0" size="121x28">Thu</text>
+					<text alignment="center" bold pos="526,0" size="121x28">Fri</text>
+					<text alignment="center" bold pos="648,0" size="121x28">Sat</text>
+					<text alignment="center" bold pos="770,0" size="121x28">Sun</text>
+				</container>
+			</container>
+			<container pos="0,591" size="892x41">
+				<widget size="892x1" type="*widget.Separator">
+					<rectangle fillColor="inputBorder" size="892x1"/>
+				</widget>
+				<container pos="0,5" size="892x36">
+					<widget size="111x36" type="*widget.Button">
+						<rectangle fillColor="button" radius="2" size="111x36"/>
+						<rectangle size="111x36"/>
+						<widget pos="32,8" size="71x20" type="*widget.RichText">
+							<text alignment="center" bold size="71x19">Add Game</text>
+						</widget>
+						<image fillMode="contain" pos="8,8" rsc="contentAddIcon" size="iconInlineSize" themed="foreground"/>
+					</widget>
+					<widget pos="115,0" size="85x36" type="*widget.Button">
+						<rectangle fillColor="button" radius="2" size="85x36"/>
+						<rectangle size="85x36"/>
+						<widget pos="32,8" size="45x20" type="*widget.RichText">
+							<text alignment="center" bold size="45x19">Export</text>
+						</widget>
+						<image fillMode="contain" pos="8,8" rsc="documentSaveIcon" size="iconInlineSize" themed="foreground"/>
+					</widget>
+					<widget pos="205,0" size="89x36" type="*widget.Button">
+						<rectangle fillColor="button" radius="2" size="89x36"/>
+						<rectangle size="89x36"/>
+						<widget pos="32,8" size="49x20" type="*widget.RichText">
+							<text alignment="center" bold size="49x19">Import</text>
+						</widget>
+						<image fillMode="contain" pos="8,8" rsc="folderOpenIcon" size="iconInlineSize" themed="foreground"/>
+					</widget>
+				</container>
+			</container>
+		</container>
+	</content>
+</canvas>

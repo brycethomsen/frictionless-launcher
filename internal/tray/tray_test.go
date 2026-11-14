@@ -1,12 +1,19 @@
 package tray
 
 import (
+	"io"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"fyne.io/systray"
+
 	"frictionless-launcher/internal/assets"
 	"frictionless-launcher/internal/config"
+	"frictionless-launcher/internal/launcher"
 	"frictionless-launcher/internal/schedule"
 )
 
@@ -161,4 +168,120 @@ func equalKinds(a, b []trayEntryKind) bool {
 		}
 	}
 	return true
+}
+
+// ---- onClick -----------------------------------------------------------------
+
+func TestOnClick_RunsUntilMenuRebuilt(t *testing.T) {
+	item := &systray.MenuItem{ClickedCh: make(chan struct{})}
+	gen := make(chan struct{})
+	clicks := make(chan struct{}, 4)
+	onClick(item, gen, func() { clicks <- struct{}{} })
+
+	for i := 0; i < 2; i++ {
+		item.ClickedCh <- struct{}{}
+		select {
+		case <-clicks:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("click %d did not run the handler", i+1)
+		}
+	}
+
+	// Rebuilding the menu closes gen; the old listener must stop, or a
+	// click on a stale item would still fire its old action.
+	close(gen)
+	select {
+	case item.ClickedCh <- struct{}{}:
+		t.Error("listener still receiving clicks after its menu was rebuilt")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// ---- openManager -------------------------------------------------------------
+
+// TestHelperProcess is not a real test: it stands in for the --manage
+// process, staying open until its stdin is closed (the window closing).
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("FL_TRAY_HELPER") == "" {
+		return
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
+}
+
+func TestOpenManager_OneWindowAtATime(t *testing.T) {
+	var mu sync.Mutex
+	var started []io.WriteCloser
+	orig := startSelf
+	startSelf = func(args ...string) (*exec.Cmd, error) {
+		if len(args) != 1 || args[0] != launcher.FlagManage {
+			t.Errorf("started with %q, want [%s]", args, launcher.FlagManage)
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
+		cmd.Env = append(os.Environ(), "FL_TRAY_HELPER=1")
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		started = append(started, stdin)
+		mu.Unlock()
+		return cmd, nil
+	}
+	t.Cleanup(func() {
+		startSelf = orig
+		mu.Lock()
+		defer mu.Unlock()
+		for _, w := range started {
+			w.Close()
+		}
+	})
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(started)
+	}
+	managerOpen := func(tc *trayController) bool {
+		tc.mu.Lock()
+		defer tc.mu.Unlock()
+		return tc.manager != nil
+	}
+
+	tc := &trayController{}
+	tc.openManager()
+	tc.openManager() // already open: must not start a second window
+	if n := count(); n != 1 {
+		t.Fatalf("started %d manager processes, want 1", n)
+	}
+
+	// Closing the window lets the next click open a new one.
+	mu.Lock()
+	started[0].Close()
+	mu.Unlock()
+	deadline := time.Now().Add(10 * time.Second)
+	for managerOpen(tc) {
+		if time.Now().After(deadline) {
+			t.Fatal("manager process exited but the tray still thinks it is open")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	tc.openManager()
+	if n := count(); n != 2 {
+		t.Errorf("started %d manager processes after reopening, want 2", n)
+	}
+}
+
+func TestOpenManager_StartFailureLeavesNoWindow(t *testing.T) {
+	orig := startSelf
+	startSelf = func(args ...string) (*exec.Cmd, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { startSelf = orig })
+
+	tc := &trayController{}
+	tc.openManager()
+	if tc.manager != nil {
+		t.Error("a failed start must not be remembered as an open window")
+	}
 }

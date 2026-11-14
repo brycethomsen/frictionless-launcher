@@ -25,6 +25,10 @@ import (
 	"frictionless-launcher/internal/schedule"
 )
 
+// clock is time.Now, swappable in tests so time-dependent views (today's
+// column, the "now" line, "next launch" labels) render the same every run.
+var clock = time.Now
+
 // editorDialog{Width,Height} are the game editor's comfortable size — not
 // just a Resize() argument, but also what preferredWindowSize uses to set
 // the window's floor, so the main window can never shrink so far that
@@ -761,7 +765,7 @@ func (ui *GameManagerUI) showGameEditor(game *config.Game, methodLocked bool, on
 // statusLabel returns the short status shown next to a game's name in the
 // list: "Disabled", "No schedule", or its next upcoming launch time.
 func statusLabel(game config.Game) string {
-	return statusLabelAt(game, time.Now())
+	return statusLabelAt(game, clock())
 }
 
 func statusLabelAt(game config.Game, now time.Time) string {

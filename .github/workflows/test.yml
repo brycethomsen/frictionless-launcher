@@ -1,0 +1,119 @@
+# Unit tests and static checks on all three OSes. Not triggered directly:
+# ci.yml runs it on every PR and push to main, and release.yml runs it again
+# on the tagged commit before building anything.
+name: Test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    # Windows runners default `run:` steps to pwsh, which mis-tokenizes
+    # `-coverprofile=coverage.out` into two separate arguments. bash (via
+    # Git Bash, always present on windows-latest) parses it correctly and
+    # keeps behavior consistent across all three OSes.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Windows Defender's real-time scanning makes Go/cgo builds dramatically
+      # slower on windows-latest (every module file, every object file gets
+      # scanned as it's written). Safe here — these are single-use, ephemeral
+      # runner VMs, not a persistent machine.
+      - name: Disable Windows Defender real-time scanning
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          # setup-go keys its cache on OS + Go version + this file list, not
+          # the job, so naming this workflow keeps the test and build jobs'
+          # caches apart: their compiler flags differ, and sharing one key
+          # meant whichever job saved first left the other recompiling Fyne.
+          cache-dependency-path: |
+            go.sum
+            .github/workflows/test.yml
+
+      - name: Download dependencies
+        run: go mod download
+
+      # Fyne needs cgo + GLFW's X11 dependency to even compile on Linux,
+      # let alone run — same packages build.yml's Linux job installs.
+      - name: Install Fyne Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
+
+      - name: Run tests with coverage
+        run: go test -v -race -coverprofile=coverage.out ./... | tee test-output.txt
+
+      # Coverage can only go down by a deliberate edit here. Measured on
+      # Linux (the numbers differ a little per OS), each floor a few points
+      # under the current figure. platform is left out: most of it is per-OS
+      # code that only one runner compiles.
+      - name: Check coverage floors (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          declare -A floor=(
+            [config]=78 [discovery]=83 [launcher]=77 [logging]=86
+            [schedule]=100 [tray]=38 [ui]=68
+          )
+          {
+            echo "### Coverage"
+            echo "| package | coverage | floor |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          failed=0
+          for pkg in "${!floor[@]}"; do
+            pct=$(grep -E "^ok\s+frictionless-launcher/internal/$pkg\s" test-output.txt | grep -oE '[0-9.]+% of statements' | cut -d% -f1)
+            if [ -z "$pct" ]; then
+              echo "::error::no coverage reported for internal/$pkg"
+              failed=1
+              continue
+            fi
+            echo "| internal/$pkg | $pct% | ${floor[$pkg]}% |" >> "$GITHUB_STEP_SUMMARY"
+            if awk -v p="$pct" -v f="${floor[$pkg]}" 'BEGIN { exit !(p < f) }'; then
+              echo "::error::internal/$pkg coverage $pct% is below its floor of ${floor[$pkg]}%"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      # Linux and macOS only. On Windows, vet can't reuse the -race test
+      # build, so it recompiles all of Fyne's cgo code (GLFW, OpenGL) with
+      # MinGW a second time -- about 6 of the job's ~14 minutes. Vet's
+      # findings are nearly all OS-independent, and the Windows-only Go
+      # files are still compiled and tested by the step above.
+      - name: Run go vet
+        if: matrix.os != 'windows-latest'
+        run: go vet ./... && go vet -tags smoke ./internal/smoke/
+
+      - name: Check formatting (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "The following files are not formatted:"
+            gofmt -s -l .
+            exit 1
+          fi
+
+      - name: Check go.mod and go.sum are tidy (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: go mod tidy -diff
+
+      # Only reports vulnerabilities in code the app actually calls, so a
+      # failure here is worth stopping for, including on dependency PRs.
+      - name: Check for known vulnerabilities (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

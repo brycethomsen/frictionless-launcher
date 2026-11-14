@@ -14,195 +14,26 @@ permissions:
   contents: write
 
 jobs:
-  build-linux:
+  # The tagged commit is tested again here rather than trusting that main's
+  # CI passed for it: a tag can point at any commit.
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    needs: [test]
+    uses: ./.github/workflows/build.yml
+    with:
+      release: ${{ github.event_name == 'push' }}
+
+  publish:
+    needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-
-      - name: Install Fyne Linux build dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
-
-      - name: Install goreleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: latest
-          install-only: true
-
-      # --snapshot is required on non-tag-push runs (e.g. workflow_dispatch
-      # dev builds): goreleaser build otherwise requires HEAD to be exactly
-      # at a release tag, which isn't true when testing from a branch.
-      - name: Build linux binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          args="build --id linux --clean"
-          if [ "${{ github.event_name }}" != "push" ]; then
-            args="$args --snapshot"
-          fi
-          goreleaser $args
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist-linux
-          path: dist/*
-
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      # Windows Defender's real-time scanning makes Go/cgo builds dramatically
-      # slower on windows-latest. Safe here — these are single-use, ephemeral
-      # runner VMs, not a persistent machine.
-      - name: Disable Windows Defender real-time scanning
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-
-      - name: Install MinGW
-        run: choco install mingw -y
-
-      - name: Install goreleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: latest
-          install-only: true
-
-      - name: Build windows binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          args="build --id windows --clean"
-          if [ "${{ github.event_name }}" != "push" ]; then
-            args="$args --snapshot"
-          fi
-          goreleaser $args
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist-windows
-          path: dist/*
-
-  build-darwin:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-
-      - name: Install goreleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: latest
-          install-only: true
-
-      - name: Build darwin binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          args="build --id darwin --clean"
-          if [ "${{ github.event_name }}" != "push" ]; then
-            args="$args --snapshot"
-          fi
-          goreleaser $args
-
-      # A bare binary shows up in Finder as "Unix Executable File" and
-      # double-click opens it through Terminal.app instead of launching it
-      # silently — wrap it as a real .app bundle. Has to happen here, not in
-      # the release job, since sips/iconutil/codesign are macOS-only tools.
-      - name: Build macOS app bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          if [ "${{ github.event_name }}" != "push" ]; then
-            version="0.0.0-dev"
-          fi
-          bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*darwin_all*' | head -1)
-          ./packaging/macos/build-app.sh "$bin" dist "$version"
-          ditto -c -k --keepParent dist/Frictionless-Launcher.app dist/Frictionless-Launcher_Darwin_universal.zip
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist-darwin
-          path: dist/Frictionless-Launcher_Darwin_universal.zip
-
-  release:
-    needs: [build-linux, build-windows, build-darwin]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # goreleaser's `release` command has no OSS way to skip rebuilding and
-      # package pre-built binaries instead (that's a Pro-only feature), so
-      # this job packages the artifacts from the three native build jobs
-      # directly rather than invoking goreleaser again.
-      - name: Download all build artifacts
+      - name: Download release archives
         uses: actions/download-artifact@v8
         with:
-          pattern: dist-*
-          path: dist
-          merge-multiple: true
-
-      - name: Package archives and checksums
-        run: |
-          set -euo pipefail
-          mkdir -p release
-
-          linux_bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*linux*' | head -1)
-          darwin_zip=$(find dist -type f -name 'Frictionless-Launcher_Darwin_universal.zip' | head -1)
-          windows_bin=$(find dist -type f -name 'Frictionless-Launcher.exe' -path '*windows*' | head -1)
-
-          if [ -z "$linux_bin" ] || [ -z "$darwin_zip" ] || [ -z "$windows_bin" ]; then
-            echo "missing an expected build artifact:"
-            echo "  linux:   ${linux_bin:-MISSING}"
-            echo "  darwin:  ${darwin_zip:-MISSING}"
-            echo "  windows: ${windows_bin:-MISSING}"
-            find dist -type f
-            exit 1
-          fi
-
-          # actions/upload-artifact + download-artifact can strip the
-          # executable bit off Unix binaries during their zip round-trip —
-          # restore it before archiving, or the published binary fails with
-          # "permission denied" on Linux. The darwin .app bundle was already
-          # assembled, signed, and zipped in build-darwin (needs macOS-only
-          # tools), so it just needs copying into place here.
-          chmod +x "$linux_bin"
-
-          tar -C "$(dirname "$linux_bin")" -czf release/Frictionless-Launcher_Linux_x86_64.tar.gz Frictionless-Launcher
-          cp "$darwin_zip" release/Frictionless-Launcher_Darwin_universal.zip
-          (cd "$(dirname "$windows_bin")" && zip -j "$GITHUB_WORKSPACE/release/Frictionless-Launcher_Windows_x86_64.zip" Frictionless-Launcher.exe)
-
-          cd release && sha256sum *.tar.gz *.zip > checksums.txt
+          name: release
+          path: release
 
       - name: Create GitHub Release
         run: |
@@ -232,3 +63,4 @@ jobs:
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}

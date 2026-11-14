@@ -37,6 +37,12 @@ test-ci:
 	go test -v -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
+# Start the real binary in each mode (tray, --manage, --countdown) and check
+# it stays up without logging errors. Needs a display; opens real windows and
+# a tray icon for a few seconds each. CI runs this against the release builds.
+smoke:
+	go test -tags smoke -count=1 -v ./internal/smoke/
+
 # Quick test with verbose output
 test-verbose:
 	go test -v ./...
@@ -133,6 +139,7 @@ help:
 	@echo "  test         - Run tests"
 	@echo "  test-ci      - Run tests with coverage and race detection"
 	@echo "  test-verbose - Run tests with verbose output"
+	@echo "  smoke        - Start the real binary in each mode (needs a display)"
 	@echo "  fmt          - Format code"
 	@echo "  fmt-check    - Check code formatting"
 	@echo "  vet          - Run go vet"
@@ -154,4 +161,4 @@ help:
 	@echo "  deps      - Update dependencies"
 	@echo "  help      - Show this help"
 
-.PHONY: all build run clean deps test test-ci test-verbose fmt fmt-check vet lint check mac-intel mac-arm mac-app windows windows-dev linux steamos all-platforms help
+.PHONY: all build run clean deps test test-ci smoke test-verbose fmt fmt-check vet lint check mac-intel mac-arm mac-app windows windows-dev linux steamos all-platforms help

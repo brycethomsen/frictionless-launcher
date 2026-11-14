@@ -736,3 +736,45 @@ func TestGameStatusLabelAt_PicksEarliestOfMultipleSchedules(t *testing.T) {
 		t.Errorf("expected the earlier 12:00 window to win, got %q", got)
 	}
 }
+
+// ============================================================================
+// Rendered snapshots (see the note above TestBoard_Snapshot)
+// ============================================================================
+
+func TestShowGameEditor_Snapshot(t *testing.T) {
+	ui := newSnapshotUI(t, snapshotGames())
+	ui.window.Resize(fyne.NewSize(900, 640))
+	ui.refresh()
+	ui.window.Show()
+
+	g := snapshotGames()[0]
+	ui.showGameEditor(&g, false, func(config.Game) {}, func() {})
+	fynetest.AssertRendersToMarkup(t, "game_editor.xml", ui.window.Canvas())
+}
+
+func TestShowLaunchCountdown_Snapshot(t *testing.T) {
+	ui := newSnapshotUI(t, nil)
+	done := make(chan bool, 1)
+	ui.showLaunchCountdown("Spirit Island", 30, func(launch bool) { done <- launch })
+
+	var win fyne.Window
+	fyne.Do(func() {
+		for _, w := range ui.fyneApp.Driver().AllWindows() {
+			if w.Title() == "Frictionless" {
+				win = w
+			}
+		}
+	})
+	if win == nil {
+		t.Fatal("countdown window not found")
+	}
+	// Taken before the first one-second tick: the starting state.
+	fynetest.AssertRendersToMarkup(t, "countdown.xml", win.Canvas())
+
+	fynetest.Tap(findButtonWithText(win.Content(), "Cancel"))
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("countdown did not finish after Cancel")
+	}
+}

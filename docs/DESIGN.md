@@ -37,6 +37,7 @@ internal/
   platform/    per-OS code: Dock/frontmost app (CGo, macOS), data dir, open file, .ico tray icon
   discovery/   Steam + Epic install discovery
   assets/      embedded icon.png
+  smoke/       smoke tests that start the built binary in each mode (build tag `smoke`)
 packaging/macos/  Info.plist + build-app.sh for the .app bundle
 ```
 

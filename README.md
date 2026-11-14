@@ -210,7 +210,8 @@ git clone https://github.com/brycethomsen/frictionless-launcher.git
 cd frictionless-launcher
 make build        # builds ./frictionless-launcher for this machine
 make test         # runs the test suite
-make check        # formatting, vet, race-enabled tests: what CI runs
+make check        # formatting, vet, race-enabled tests
+make smoke        # starts the real app in each mode for a few seconds
 make help         # cross-compiling and the macOS .app bundle
 ```
 
