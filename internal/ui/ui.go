@@ -353,8 +353,26 @@ func (ui *GameManagerUI) importButton() fyne.CanvasObject {
 var discoverGames = discovery.DiscoverGames
 
 // enterManuallyLabel is the picker's first entry, ahead of the discovered
-// games so it's reachable without scrolling past a long library.
+// games so it's reachable without scrolling past a long library, and kept
+// whatever the search matches.
 const enterManuallyLabel = "Enter manually..."
+
+// filterGames returns the games whose name contains query, ignoring case
+// and surrounding spaces, in their original order. An empty query matches
+// everything.
+func filterGames(games []discovery.DiscoveredGame, query string) []discovery.DiscoveredGame {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return games
+	}
+	var matched []discovery.DiscoveredGame
+	for _, g := range games {
+		if strings.Contains(strings.ToLower(g.Name), q) {
+			matched = append(matched, g)
+		}
+	}
+	return matched
+}
 
 func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 	discovered := discoverGames()
@@ -366,32 +384,19 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 		return
 	}
 
-	// Build display names for the list: manual entry first, then the
-	// discovered games (already sorted by name).
-	names := make([]string, 0, len(discovered)+1)
-	names = append(names, enterManuallyLabel)
-	for _, g := range discovered {
-		names = append(names, fmt.Sprintf("%s (%s)", g.Name, g.LaunchMethod))
-	}
+	// Row 0 is always manual entry; row i (i >= 1) is shown[i-1], the
+	// discovered games (already sorted by name) that match the search.
+	shown := discovered
 
 	var pickerDialog *dialog.CustomDialog
 
-	list := widget.NewList(
-		func() int { return len(names) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			obj.(*widget.Label).SetText(names[id])
-		},
-	)
-
-	list.OnSelected = func(id widget.ListItemID) {
+	openManual := func() {
 		pickerDialog.Hide()
-		if id == 0 {
-			blank := config.Game{Enabled: true}
-			ui.showGameEditor(&blank, false, onSave, nil)
-			return
-		}
-		d := discovered[id-1]
+		blank := config.Game{Enabled: true}
+		ui.showGameEditor(&blank, false, onSave, nil)
+	}
+	openGame := func(d discovery.DiscoveredGame) {
+		pickerDialog.Hide()
 		g := config.Game{
 			GameName:     d.Name,
 			GamePath:     d.GamePath,
@@ -401,12 +406,51 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 		ui.showGameEditor(&g, true, onSave, nil)
 	}
 
+	list := widget.NewList(
+		func() int { return len(shown) + 1 },
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			label := enterManuallyLabel
+			if id > 0 {
+				g := shown[id-1]
+				label = fmt.Sprintf("%s (%s)", g.Name, g.LaunchMethod)
+			}
+			obj.(*widget.Label).SetText(label)
+		},
+	)
+	list.OnSelected = func(id widget.ListItemID) {
+		if id == 0 {
+			openManual()
+			return
+		}
+		openGame(shown[id-1])
+	}
+
+	search := widget.NewEntry()
+	search.SetPlaceHolder("Search games")
+	search.OnChanged = func(query string) {
+		shown = filterGames(discovered, query)
+		list.UnselectAll()
+		list.Refresh()
+		list.ScrollToTop()
+	}
+	// Enter takes the first match, so a few letters and Enter adds a game
+	// without reaching for the mouse. With no match there's nothing to take.
+	search.OnSubmitted = func(string) {
+		if len(shown) > 0 {
+			openGame(shown[0])
+		}
+	}
+
 	cancelBtn := widget.NewButton("Cancel", func() {
 		pickerDialog.Hide()
 	})
 
 	content := container.NewBorder(
-		widget.NewLabel("Select an installed game or enter manually:"),
+		container.NewVBox(
+			widget.NewLabel("Select an installed game or enter manually:"),
+			search,
+		),
 		cancelBtn, nil, nil,
 		list,
 	)
@@ -414,6 +458,7 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 	pickerDialog = dialog.NewCustomWithoutButtons("Add Game", content, ui.window)
 	pickerDialog.Resize(clampDialogSize(ui.window, fyne.NewSize(420, 400)))
 	pickerDialog.Show()
+	ui.window.Canvas().Focus(search)
 }
 
 // clampDialogSize caps want to the window's current canvas size (minus a

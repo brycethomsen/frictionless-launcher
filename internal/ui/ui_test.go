@@ -895,3 +895,157 @@ func TestShowGamePicker_SelectGameOpensItsEditor(t *testing.T) {
 		t.Error("editor should be prefilled with the selected game (Fortnite)")
 	}
 }
+
+// ---- search ------------------------------------------------------------------
+
+// findEntry returns the first *widget.Entry in obj's tree, or nil.
+func findEntry(obj fyne.CanvasObject) *widget.Entry {
+	if obj == nil {
+		return nil
+	}
+	if e, ok := obj.(*widget.Entry); ok {
+		return e
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findEntry(child); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	if w, ok := obj.(fyne.Widget); ok {
+		for _, child := range fynetest.WidgetRenderer(w).Objects() {
+			if found := findEntry(child); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func pickerGames() []discovery.DiscoveredGame {
+	return []discovery.DiscoveredGame{
+		{Name: "Balatro", LaunchMethod: "steam", GamePath: "steam://rungameid/2379780"},
+		{Name: "Baldur's Gate 3", LaunchMethod: "steam", GamePath: "steam://rungameid/1086940"},
+		{Name: "Fortnite", LaunchMethod: "epic", GamePath: "com.epicgames.launcher://apps/Fortnite?action=launch"},
+	}
+}
+
+func TestFilterGames(t *testing.T) {
+	names := func(gs []discovery.DiscoveredGame) string {
+		var n []string
+		for _, g := range gs {
+			n = append(n, g.Name)
+		}
+		return strings.Join(n, "|")
+	}
+	cases := []struct{ query, want string }{
+		{"", "Balatro|Baldur's Gate 3|Fortnite"},
+		{"   ", "Balatro|Baldur's Gate 3|Fortnite"},
+		{"bal", "Balatro|Baldur's Gate 3"},
+		{"BAL", "Balatro|Baldur's Gate 3"},
+		{"gate", "Baldur's Gate 3"},
+		{" fort ", "Fortnite"},
+		{"zelda", ""},
+	}
+	for _, c := range cases {
+		if got := names(filterGames(pickerGames(), c.query)); got != c.want {
+			t.Errorf("filterGames(%q) = %q, want %q", c.query, got, c.want)
+		}
+	}
+}
+
+func TestShowGamePicker_SearchIsFocusedOnOpen(t *testing.T) {
+	ui, _ := showPickerWith(t, pickerGames())
+	search := findEntry(ui.window.Canvas().Overlays().Top())
+	if search == nil {
+		t.Fatal("picker has no search box")
+	}
+	if ui.window.Canvas().Focused() != search {
+		t.Error("the search box should have focus when the picker opens")
+	}
+}
+
+func TestShowGamePicker_TypingNarrowsTheList(t *testing.T) {
+	ui, list := showPickerWith(t, pickerGames())
+	search := findEntry(ui.window.Canvas().Overlays().Top())
+
+	fynetest.Type(search, "bal")
+	want := []string{enterManuallyLabel, "Balatro (steam)", "Baldur's Gate 3 (steam)"}
+	if n := list.Length(); n != len(want) {
+		t.Fatalf("after typing %q the list has %d rows, want %d", "bal", n, len(want))
+	}
+	for i, w := range want {
+		if got := pickerRow(list, i); got != w {
+			t.Errorf("row %d = %q, want %q", i, got, w)
+		}
+	}
+
+	search.SetText("zelda")
+	if n := list.Length(); n != 1 || pickerRow(list, 0) != enterManuallyLabel {
+		t.Errorf("with no matches the list should hold only %q, got %d rows", enterManuallyLabel, n)
+	}
+
+	search.SetText("")
+	if n := list.Length(); n != 4 {
+		t.Errorf("clearing the search should show every game again, got %d rows", n)
+	}
+}
+
+func TestShowGamePicker_SelectingAFilteredRowOpensThatGame(t *testing.T) {
+	ui, list := showPickerWith(t, pickerGames())
+	search := findEntry(ui.window.Canvas().Overlays().Top())
+
+	// "fort" leaves Fortnite as row 1; in the unfiltered list row 1 is
+	// Balatro, so this fails if selection indexes the wrong slice.
+	fynetest.Type(search, "fort")
+	list.Select(1)
+
+	top := ui.window.Canvas().Overlays().Top()
+	if !containsText(top, "Fortnite") || containsText(top, "Balatro") {
+		t.Error("selecting the only match should open Fortnite's editor")
+	}
+}
+
+func TestShowGamePicker_EnterOpensFirstMatch(t *testing.T) {
+	ui, _ := showPickerWith(t, pickerGames())
+	search := findEntry(ui.window.Canvas().Overlays().Top())
+
+	fynetest.Type(search, "gate")
+	search.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+
+	top := ui.window.Canvas().Overlays().Top()
+	if editorField(ui, "Launch Method") != nil || !containsText(top, "Baldur's Gate 3") {
+		t.Error("Enter should open the editor for the first match, Baldur's Gate 3")
+	}
+}
+
+func TestShowGamePicker_EnterWithNoMatchDoesNothing(t *testing.T) {
+	ui, list := showPickerWith(t, pickerGames())
+	search := findEntry(ui.window.Canvas().Overlays().Top())
+
+	fynetest.Type(search, "zelda")
+	search.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+
+	if findForm(ui.window.Canvas().Overlays().Top()) != nil {
+		t.Error("Enter with no matching game should not open an editor")
+	}
+	if findList(ui.window.Canvas().Overlays().Top()) != list {
+		t.Error("the picker should still be open")
+	}
+}
+
+func TestShowGamePicker_SearchSnapshot(t *testing.T) {
+	orig := discoverGames
+	discoverGames = pickerGames
+	t.Cleanup(func() { discoverGames = orig })
+
+	ui := newSnapshotUI(t, nil)
+	ui.window.Resize(fyne.NewSize(900, 640))
+	ui.refresh()
+	ui.window.Show()
+	ui.showGamePicker(func(config.Game) {})
+	fynetest.Type(findEntry(ui.window.Canvas().Overlays().Top()), "bal")
+	fynetest.AssertRendersToMarkup(t, "game_picker_search.xml", ui.window.Canvas())
+}
