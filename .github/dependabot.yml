@@ -6,9 +6,45 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     groups:
-      go-dependencies:
+      # fsnotify, gopsutil, and yaml.v3 are the only non-Fyne dependencies,
+      # and the code that wraps each of them is heavily unit-tested (config
+      # load/save for yaml.v3, process detection for gopsutil) — patch/minor
+      # bumps here auto-merge on green CI (see ci.yml's
+      # dependabot-auto-merge job). gopsutil's own per-OS backends are
+      # included too, since they move in lockstep with it and are exercised
+      # by the same tests.
+      go-dependencies-safe:
+        patterns:
+          - "github.com/fsnotify/fsnotify"
+          - "github.com/shirou/gopsutil/v4"
+          - "gopkg.in/yaml.v3"
+          - "github.com/go-ole/go-ole"
+          - "github.com/lufia/plan9stats"
+          - "github.com/power-devops/perfstat"
+          - "github.com/tklauser/go-sysconf"
+          - "github.com/tklauser/numcpus"
+          - "github.com/yusufpapurcu/wmi"
+          - "golang.org/x/sys"
+      # Everything else — in practice, the fyne.io/fyne/v2 tree (rendering,
+      # windowing, systray, text/image handling). This app is deeply
+      # integrated with Fyne (custom widgets, a custom fyne.Layout, a custom
+      # theme) and none of that live-wiring has the kind of test coverage
+      # the safe group's code does, so this group never auto-merges
+      # regardless of update-type — see ci.yml.
+      fyne:
         patterns:
           - "*"
+        exclude-patterns:
+          - "github.com/fsnotify/fsnotify"
+          - "github.com/shirou/gopsutil/v4"
+          - "gopkg.in/yaml.v3"
+          - "github.com/go-ole/go-ole"
+          - "github.com/lufia/plan9stats"
+          - "github.com/power-devops/perfstat"
+          - "github.com/tklauser/go-sysconf"
+          - "github.com/tklauser/numcpus"
+          - "github.com/yusufpapurcu/wmi"
+          - "golang.org/x/sys"
 
   - package-ecosystem: "github-actions"
     directory: "/"
