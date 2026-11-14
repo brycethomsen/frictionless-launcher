@@ -349,8 +349,15 @@ func (ui *GameManagerUI) importButton() fyne.CanvasObject {
 	})
 }
 
+// discoverGames is discovery.DiscoverGames, swappable in tests.
+var discoverGames = discovery.DiscoverGames
+
+// enterManuallyLabel is the picker's first entry, ahead of the discovered
+// games so it's reachable without scrolling past a long library.
+const enterManuallyLabel = "Enter manually..."
+
 func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
-	discovered := discovery.DiscoverGames()
+	discovered := discoverGames()
 
 	if len(discovered) == 0 {
 		// No games found — fall straight through to manual entry
@@ -359,12 +366,13 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 		return
 	}
 
-	// Build display names for the list
-	names := make([]string, len(discovered)+1)
-	for i, g := range discovered {
-		names[i] = fmt.Sprintf("%s (%s)", g.Name, g.LaunchMethod)
+	// Build display names for the list: manual entry first, then the
+	// discovered games (already sorted by name).
+	names := make([]string, 0, len(discovered)+1)
+	names = append(names, enterManuallyLabel)
+	for _, g := range discovered {
+		names = append(names, fmt.Sprintf("%s (%s)", g.Name, g.LaunchMethod))
 	}
-	names[len(discovered)] = "Enter manually..."
 
 	var pickerDialog *dialog.CustomDialog
 
@@ -378,12 +386,12 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 
 	list.OnSelected = func(id widget.ListItemID) {
 		pickerDialog.Hide()
-		if id >= len(discovered) {
+		if id == 0 {
 			blank := config.Game{Enabled: true}
 			ui.showGameEditor(&blank, false, onSave, nil)
 			return
 		}
-		d := discovered[id]
+		d := discovered[id-1]
 		g := config.Game{
 			GameName:     d.Name,
 			GamePath:     d.GamePath,

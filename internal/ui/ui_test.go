@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"frictionless-launcher/internal/config"
+	"frictionless-launcher/internal/discovery"
 )
 
 // findButton recursively walks a CanvasObject tree, including into compound
@@ -776,5 +777,121 @@ func TestShowLaunchCountdown_Snapshot(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Error("countdown did not finish after Cancel")
+	}
+}
+
+// ============================================================================
+// showGamePicker — manual entry first, then discovered games
+// ============================================================================
+
+// findList returns the first *widget.List in obj's tree, or nil.
+func findList(obj fyne.CanvasObject) *widget.List {
+	if obj == nil {
+		return nil
+	}
+	if l, ok := obj.(*widget.List); ok {
+		return l
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findList(child); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	if w, ok := obj.(fyne.Widget); ok {
+		for _, child := range fynetest.WidgetRenderer(w).Objects() {
+			if found := findList(child); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// showPickerWith opens the Add Game picker over a fake discovery result and
+// returns its list.
+func showPickerWith(t *testing.T, found []discovery.DiscoveredGame) (*GameManagerUI, *widget.List) {
+	t.Helper()
+	orig := discoverGames
+	discoverGames = func() []discovery.DiscoveredGame { return found }
+	t.Cleanup(func() { discoverGames = orig })
+
+	ui := newTestUI(t, nil)
+	ui.window.Resize(fyne.NewSize(900, 640))
+	ui.window.Show()
+	ui.showGamePicker(func(config.Game) {})
+	list := findList(ui.window.Canvas().Overlays().Top())
+	if list == nil {
+		t.Fatal("could not find the picker's list")
+	}
+	return ui, list
+}
+
+// pickerRow returns the text the picker shows at row id.
+func pickerRow(list *widget.List, id widget.ListItemID) string {
+	item := list.CreateItem()
+	list.UpdateItem(id, item)
+	return item.(*widget.Label).Text
+}
+
+// editorField returns the form item labelled label in the editor dialog on
+// top of ui's window, or nil.
+func editorField(ui *GameManagerUI, label string) *widget.FormItem {
+	form := findForm(ui.window.Canvas().Overlays().Top())
+	if form == nil {
+		return nil
+	}
+	for _, item := range form.Items {
+		if item.Text == label {
+			return item
+		}
+	}
+	return nil
+}
+
+func TestShowGamePicker_EnterManuallyComesFirst(t *testing.T) {
+	_, list := showPickerWith(t, []discovery.DiscoveredGame{
+		{Name: "Balatro", LaunchMethod: "steam", GamePath: "steam://rungameid/2379780"},
+		{Name: "Fortnite", LaunchMethod: "epic", GamePath: "com.epicgames.launcher://apps/Fortnite?action=launch"},
+	})
+
+	if n := list.Length(); n != 3 {
+		t.Fatalf("picker has %d rows, want 3 (manual entry + 2 games)", n)
+	}
+	want := []string{enterManuallyLabel, "Balatro (steam)", "Fortnite (epic)"}
+	for i, w := range want {
+		if got := pickerRow(list, i); got != w {
+			t.Errorf("row %d = %q, want %q", i, got, w)
+		}
+	}
+}
+
+func TestShowGamePicker_SelectEnterManuallyOpensBlankEditor(t *testing.T) {
+	ui, list := showPickerWith(t, []discovery.DiscoveredGame{
+		{Name: "Balatro", LaunchMethod: "steam", GamePath: "steam://rungameid/2379780"},
+	})
+
+	list.Select(0)
+
+	if editorField(ui, "Launch Method") == nil {
+		t.Error("manual entry should open the editor with a Launch Method field to choose")
+	}
+}
+
+func TestShowGamePicker_SelectGameOpensItsEditor(t *testing.T) {
+	ui, list := showPickerWith(t, []discovery.DiscoveredGame{
+		{Name: "Balatro", LaunchMethod: "steam", GamePath: "steam://rungameid/2379780"},
+		{Name: "Fortnite", LaunchMethod: "epic", GamePath: "com.epicgames.launcher://apps/Fortnite?action=launch"},
+	})
+
+	list.Select(2) // Fortnite: row 0 is manual entry
+
+	if editorField(ui, "Launch Method") != nil {
+		t.Error("a discovered game's editor should lock (hide) the launch method")
+	}
+	if !containsText(ui.window.Canvas().Overlays().Top(), "Fortnite") {
+		t.Error("editor should be prefilled with the selected game (Fortnite)")
 	}
 }
