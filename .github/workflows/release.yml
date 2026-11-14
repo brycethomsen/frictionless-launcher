@@ -145,7 +145,7 @@ jobs:
             version="0.0.0-dev"
           fi
           bin=$(find dist -type f -name 'Frictionless-Launcher' -path '*darwin_all*' | head -1)
-          ./scripts/build-macos-app.sh "$bin" dist "$version"
+          ./packaging/macos/build-app.sh "$bin" dist "$version"
           ditto -c -k --keepParent dist/Frictionless-Launcher.app dist/Frictionless-Launcher_Darwin_universal.zip
 
       - name: Upload artifact

@@ -96,13 +96,16 @@ make build
 
 ### Project Structure
 
-- `main.go` - Core app logic, system tray, scheduling
-- `DESIGN.md` - Detailed design document and future plans
-- `TODO.md` - Known issues and planned features
+- `main.go` - Entry point; picks tray / `--manage` / `--countdown` mode
+- `internal/` - All app code, one package per responsibility (tray, launcher, schedule, ui, config, ...)
+- `packaging/macos/` - `.app` bundle plist and build script
+- [`docs/DESIGN.md`](docs/DESIGN.md) - Architecture and design decisions
+- [`docs/TODO.md`](docs/TODO.md) - Known issues and planned features
+- [`AGENTS.md`](AGENTS.md) - Where code goes and the conventions to follow (for contributors and coding agents; Claude Code loads it automatically)
 
 ## Roadmap
 
-See [TODO.md](TODO.md) for the full list. Key features planned:
+See [docs/TODO.md](docs/TODO.md) for the full list. Key features planned:
 - Continuous schedule monitoring (currently only checks at boot)
 - Auto-discovery of installed Steam games
 - Launch args auto-detection from community databases

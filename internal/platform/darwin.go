@@ -1,8 +1,9 @@
 //go:build darwin
 
 // Package platform wraps the bits of OS integration that differ per
-// platform: hiding the dock icon, reading the frontmost app, and sending
-// native notifications.
+// platform: hiding the dock icon, reading the frontmost app, sending native
+// notifications, opening files, the per-user data directory, and the tray
+// icon format. The tray process depends on it, so it must not import Fyne.
 package platform
 
 /*
@@ -10,13 +11,20 @@ package platform
 #cgo LDFLAGS: -framework AppKit
 #import <AppKit/AppKit.h>
 
+// setupApp keeps the Fyne UI processes out of the Dock (matching the tray
+// process) and brings their window to the front, since they are started in
+// the background by the tray process rather than by the user directly.
 void setupApp() {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-    for (NSWindow *w in [[NSApp windows] copy]) {
-        if ([[w title] isEqualToString:@"SystrayMonitor"]) {
-            [w close];
-        }
-    }
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+// hideFromDockAsync sets the accessory (menu-bar-only) activation policy for
+// the tray process. It may be called from any thread.
+void hideFromDockAsync() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    });
 }
 
 const char* frontmostAppName() {
@@ -28,26 +36,15 @@ const char* frontmostAppName() {
 */
 import "C"
 
-import (
-	"time"
+// PrepareUIProcess keeps a Fyne UI process (--manage, --countdown) out of
+// the Dock and brings its window to the front. Call it on the UI's main
+// thread once the app has started, and again after its first window exists:
+// GLFW resets the activation policy when it creates that window.
+func PrepareUIProcess() { C.setupApp() }
 
-	"fyne.io/fyne/v2"
-)
-
-// SetupDockBehavior hides the dock icon (NSApplicationActivationPolicyAccessory)
-// once the Fyne app lifecycle starts, then calls onStarted.
-func SetupDockBehavior(fyneApp fyne.App, onStarted func()) {
-	fyneApp.Lifecycle().SetOnStarted(func() {
-		C.setupApp()
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			fyne.Do(func() { C.setupApp() })
-		}()
-		if onStarted != nil {
-			onStarted()
-		}
-	})
-}
+// HideFromDock keeps the (non-Fyne) tray process out of the Dock when it runs
+// as a plain binary; the .app bundle already does this via LSUIElement.
+func HideFromDock() { C.hideFromDockAsync() }
 
 // GetFrontmostApp returns the name of the currently frontmost application,
 // or "" if none can be determined.

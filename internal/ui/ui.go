@@ -1,9 +1,10 @@
-package main
+package ui
 
 import (
 	"fmt"
 	"image/color"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -17,8 +18,11 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"gopkg.in/yaml.v3"
 
+	"frictionless-launcher/internal/assets"
 	"frictionless-launcher/internal/config"
 	"frictionless-launcher/internal/discovery"
+	"frictionless-launcher/internal/platform"
+	"frictionless-launcher/internal/schedule"
 )
 
 // editorDialog{Width,Height} are the game editor's comfortable size — not
@@ -31,23 +35,96 @@ const (
 	dialogMargin       float32 = 40
 )
 
+// GameManagerUI is the Manage Games window and the dialogs it opens. It runs
+// in the --manage process, which owns store: edits change store.Current()
+// in place and are written with save(); the tray process picks them up from
+// the file.
 type GameManagerUI struct {
 	fyneApp fyne.App
 	window  fyne.Window
-	appRef  *App
+	store   *config.Store
 }
 
-func newGameManagerUI(appRef *App) *GameManagerUI {
+// save writes the config, logging (rather than surfacing) a failure, as the
+// app always has.
+func (ui *GameManagerUI) save() {
+	if err := ui.store.Save(); err != nil {
+		log.Printf("Error saving config: %v", err)
+	}
+}
+
+// onStarted runs f (if non-nil) once fyneApp has started, after preparing
+// the process window-wise (on macOS: no Dock icon, window in front).
+func onStarted(fyneApp fyne.App, f func()) {
+	fyneApp.Lifecycle().SetOnStarted(func() {
+		platform.PrepareUIProcess()
+		// GLFW resets the activation policy when it creates its first window,
+		// so apply ours again once that has happened.
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			fyne.Do(platform.PrepareUIProcess)
+		}()
+		if f != nil {
+			f()
+		}
+	})
+}
+
+// newFyneApp creates the themed Fyne app used by the --manage and --countdown
+// processes. The resident tray process never calls this.
+func newFyneApp() fyne.App {
 	fyneApp := app.NewWithID("com.frictionless.launcher")
 	fyneApp.Settings().SetTheme(newFrictionlessTheme())
+	fyneApp.SetIcon(fyne.NewStaticResource("icon.png", assets.Icon))
+	return fyneApp
+}
+
+// RunManager runs the Manage Games window (the --manage process). Changes are
+// saved to store's file, which the tray process watches. It blocks until the
+// window is closed.
+func RunManager(store *config.Store) {
+	ui := newGameManagerUI(store)
+	onStarted(ui.fyneApp, nil)
+	ui.show()
+	ui.fyneApp.Run()
+}
+
+// RunCountdown shows the launch countdown window (the --countdown process)
+// and reports whether the user cancelled. It blocks until the countdown ends
+// or is cancelled.
+func RunCountdown(gameName string, seconds int) (cancelled bool) {
+	ui := &GameManagerUI{fyneApp: newFyneApp()}
+	result := make(chan bool, 1)
+	onStarted(ui.fyneApp, func() {
+		ui.showLaunchCountdown(gameName, seconds, func(launch bool) {
+			if !launch {
+				log.Printf("Launch of %s cancelled from countdown window", gameName)
+			}
+			result <- !launch
+			fyne.Do(ui.fyneApp.Quit)
+		})
+	})
+	ui.fyneApp.Run()
+	select {
+	case cancelled := <-result:
+		return cancelled
+	default:
+		return false // window closed some other way: no objection to the launch
+	}
+}
+
+func newGameManagerUI(store *config.Store) *GameManagerUI {
+	fyneApp := newFyneApp()
 
 	win := fyneApp.NewWindow("Frictionless Launcher")
-	win.SetCloseIntercept(func() { win.Hide() })
+	// This window is the whole --manage process: closing it exits, freeing
+	// the Fyne/OpenGL resources until the user opens it again from the tray.
+	win.SetMaster()
 
 	ui := &GameManagerUI{
 		fyneApp: fyneApp,
 		window:  win,
-		appRef:  appRef,
+		store:   store,
 	}
 
 	win.Resize(ui.preferredWindowSize())
@@ -215,7 +292,7 @@ func (ui *GameManagerUI) exportButton() fyne.CanvasObject {
 			defer f.Close()
 			data, err := yaml.Marshal(struct {
 				Games []config.Game `yaml:"games"`
-			}{Games: ui.appRef.config.Games})
+			}{Games: ui.store.Current().Games})
 			if err != nil {
 				dialog.ShowError(err, ui.window)
 				return
@@ -253,11 +330,11 @@ func (ui *GameManagerUI) importButton() fyne.CanvasObject {
 				return
 			}
 			ui.showConfirmDialog("Import Games",
-				fmt.Sprintf("Replace all %d current game(s) with %d imported game(s)?", len(ui.appRef.config.Games), len(imported.Games)),
+				fmt.Sprintf("Replace all %d current game(s) with %d imported game(s)?", len(ui.store.Current().Games), len(imported.Games)),
 				"Replace", widget.DangerImportance,
 				func() {
-					ui.appRef.config.Games = imported.Games
-					ui.appRef.saveConfig()
+					ui.store.Current().Games = imported.Games
+					ui.save()
 					fyne.Do(ui.refresh)
 				},
 			)
@@ -361,30 +438,10 @@ func (ui *GameManagerUI) showConfirmDialog(title, message, confirmLabel string, 
 	d.Show()
 }
 
-// scheduleOverlaps returns true if [start1,end1] and [start2,end2] share any time.
-// Times are "HH:MM" strings.
-func scheduleOverlaps(start1, end1, start2, end2 string) bool {
-	return start1 < end2 && start2 < end1
-}
-
 // findOverlappingGame returns the name of any existing game whose schedule overlaps
 // with the given days+times, excluding the game being edited (skipName).
 func (ui *GameManagerUI) findOverlappingGame(skipName string, days []string, startTime, endTime string) string {
-	for _, existing := range ui.appRef.config.Games {
-		if existing.GameName == skipName {
-			continue
-		}
-		for _, es := range existing.Schedules {
-			for _, eDay := range es.Days {
-				for _, newDay := range days {
-					if strings.EqualFold(eDay, newDay) && scheduleOverlaps(startTime, endTime, es.StartTime, es.EndTime) {
-						return existing.GameName
-					}
-				}
-			}
-		}
-	}
-	return ""
+	return schedule.Conflict(ui.store.Current().Games, skipName, days, startTime, endTime)
 }
 
 var hourOptions = func() []string {
@@ -406,7 +463,7 @@ var minuteOptions = []string{"00", "05", "10", "15", "20", "25", "30", "35", "40
 // hand-edited YAML) doesn't already land on one.
 func newTimeSelect(clock, defaultHour, defaultMinute string) (hourSel, minSel *widget.Select) {
 	h, m := defaultHour, defaultMinute
-	if isValidTimeFormat(clock) {
+	if schedule.ValidClock(clock) {
 		parts := strings.Split(clock, ":")
 		h = parts[0]
 		var mi int
@@ -637,7 +694,7 @@ func (ui *GameManagerUI) showGameEditor(game *config.Game, methodLocked bool, on
 			for pi, prev := range schedules {
 				for _, pd := range prev.Days {
 					for _, nd := range selectedDays {
-						if strings.EqualFold(pd, nd) && scheduleOverlaps(startTime, endTime, prev.StartTime, prev.EndTime) {
+						if strings.EqualFold(pd, nd) && schedule.Overlaps(startTime, endTime, prev.StartTime, prev.EndTime) {
 							dialog.ShowError(fmt.Errorf("time windows %d and %d overlap on %s", pi+1, ri+1, nd), ui.window)
 							return
 						}
@@ -701,32 +758,18 @@ func (ui *GameManagerUI) showGameEditor(game *config.Game, methodLocked bool, on
 	d.Show()
 }
 
-// gameStatusLabel returns the short status shown next to a game's name in
-// the list: "Disabled", "No schedule", or its next upcoming launch time.
-func gameStatusLabel(app *App, game config.Game) string {
-	return gameStatusLabelAt(app, game, time.Now())
+// statusLabel returns the short status shown next to a game's name in the
+// list: "Disabled", "No schedule", or its next upcoming launch time.
+func statusLabel(game config.Game) string {
+	return statusLabelAt(game, time.Now())
 }
 
-func gameStatusLabelAt(app *App, game config.Game, now time.Time) string {
+func statusLabelAt(game config.Game, now time.Time) string {
 	if !game.Enabled {
 		return "Disabled"
 	}
 	if len(game.Schedules) == 0 {
 		return "No schedule"
 	}
-	return app.nextScheduleLabelAt(game, now)
-}
-
-func isValidTimeFormat(t string) bool {
-	parts := strings.Split(t, ":")
-	if len(parts) != 2 {
-		return false
-	}
-
-	var hour, minute int
-	if _, err := fmt.Sscanf(t, "%d:%d", &hour, &minute); err != nil {
-		return false
-	}
-
-	return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+	return schedule.NextLabel(game, now)
 }

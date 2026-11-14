@@ -90,7 +90,7 @@ mac-arm:
 mac-app: build
 	@echo "Building macOS .app bundle..."
 	mkdir -p dist
-	./scripts/build-macos-app.sh $(BINARY_NAME) dist dev
+	./packaging/macos/build-app.sh $(BINARY_NAME) dist dev
 	@echo "Bundle created at dist/Frictionless-Launcher.app"
 
 # Windows x86_64 (no console window)

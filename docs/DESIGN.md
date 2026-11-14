@@ -8,22 +8,48 @@ Frictionless Launcher automatically launches games on a schedule so your game is
 
 ## Architecture
 
-Single Go binary. System tray app with no dock icon on macOS.
+Single Go binary. System tray app with no dock icon on macOS. The binary
+runs in one of three modes, chosen by its first argument:
+
+| Mode            | Process lifetime        | What it runs |
+|-----------------|-------------------------|--------------|
+| *(no flag)*     | resident, from login    | tray icon + menu, schedule monitor, config watcher, launching |
+| `--manage`      | while the window is open | the schedule board (Manage Games) |
+| `--countdown N GAME` | ~N seconds          | the launch countdown window; exit code 3 = user cancelled |
+
+The resident tray process never initialises Fyne. It drives the OS tray
+directly through `fyne.io/systray` and blocks on timers between minute
+ticks, so it has no OpenGL context and no render loop. Fyne only runs in the
+short-lived child processes, which the tray starts with `os.Executable()`.
+The processes share state only through `config.yaml` (the `--manage` window
+saves it; the tray's fsnotify watcher reloads it) and the countdown's exit
+code.
 
 ```
-main.go          — app lifecycle, tray menu, schedule monitor, launch logic
-ui.go            — Fyne UI: game manager window, countdown window, game editor/picker
-discovery.go     — Steam + Epic manifest parsing for auto-discovery
-dialogs.go       — shared helpers (isValidTimeFormat)
-dock_darwin.go   — CGo: NSApplicationActivationPolicyAccessory to hide dock icon
-dock_other.go    — no-op stub for non-macOS
+main.go               mode dispatch only
+internal/
+  config/      Config types; Store (load/save, keeps last good config); file watcher; config path
+  schedule/    pure window math: InWindow, NextStart, NextLabel, LaunchedInWindow, Upcoming, Conflict
+  launcher/    tray-process scheduler: App state (mutex-guarded), minute monitor, countdown, launch commands
+  tray/        systray icon + menu (implements launcher.Tray)         — never imports Fyne
+  ui/          all Fyne code: --manage board, editor/picker, --countdown window, theme
+  logging/     log file setup/rotation (only the tray process rotates)
+  platform/    per-OS code: Dock/frontmost app (CGo, macOS), data dir, open file, .ico tray icon
+  discovery/   Steam + Epic install discovery
+  assets/      embedded icon.png
+packaging/macos/  Info.plist + build-app.sh for the .app bundle
 ```
+
+Dependency direction: `config` ← `schedule` ← `launcher` ← `tray`, and `ui`
+uses only `config`, `schedule`, `discovery`, `platform` and `assets`. Nothing
+the tray depends on imports Fyne; `internal/tray/deps_test.go` enforces this.
 
 ### Dependencies
 
 ```
-fyne.io/fyne/v2          — UI framework + system tray (desktop.App interface)
-fyne.io/systray          — indirect dep used internally by Fyne
+fyne.io/fyne/v2          — UI framework (--manage / --countdown processes only)
+fyne.io/systray          — native system tray for the resident process
+github.com/fyne-io/image — .ico encoding for the Windows tray icon
 gopkg.in/yaml.v3         — config parsing
 github.com/fsnotify/fsnotify      — config file hot-reload
 github.com/shirou/gopsutil/v4     — process detection (direct-launch games only)
@@ -162,10 +188,10 @@ Legacy single-game format is migrated to the multi-game array on first load.
 
 **Foreground = skip, not defer** — if an app is in the foreground, the launch is skipped for that minute. The monitor retries on the next tick. This is intentionally silent — no popups, no interruption.
 
-**Countdown is a standalone window** — not a dialog parented to the game manager. The game manager window stays hidden unless the user opens it from the tray.
+**Countdown is a standalone window** — not a dialog parented to the game manager, and in fact its own `--countdown` process. The tray process owns the countdown timer; the window can only cancel (exit code 3), so if it fails to start or crashes the launch still happens on schedule and the tray's Cancel item still works.
 
 **No priority system** — superseded by overlap validation. Two games cannot be scheduled at the same time.
 
-**`fyne.io/systray` not used directly** — Fyne's `desktop.App` interface (`desk.SetSystemTrayMenu`) owns the tray. `fyne.io/systray` remains as an indirect dependency used internally by Fyne.
+**Tray process doesn't use Fyne; `fyne.io/systray` is used directly** — previously Fyne's `desktop.App` (`desk.SetSystemTrayMenu`) owned the tray, which made the resident process a full Fyne app: setting a tray menu makes Fyne create a hidden "SystrayMonitor" window with an OpenGL context at startup (loading the GPU driver — the main reason Windows rated startup impact "High"), and Fyne's event loop ticks at 60 Hz forever even with no window visible (~2% of a core, measured on macOS). Splitting the UI into on-demand child processes took the idle tray process to ~0 CPU and cut its memory footprint from ~76 MB to ~19 MB (macOS, `top` MEM). The cost is a short Fyne startup (~0.5 s) each time Manage Games or the countdown opens.
 
 **No zenity** — replaced entirely by Fyne dialogs.

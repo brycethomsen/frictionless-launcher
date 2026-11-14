@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"fmt"
@@ -189,7 +189,7 @@ func withAlpha(c color.Color, a uint8) color.Color {
 // custom fyne.Layouts so they reflow live as the window is resized, rather
 // than being laid out once at a fixed pixel size.
 func (ui *GameManagerUI) buildScheduleBoard() fyne.CanvasObject {
-	games := ui.appRef.config.Games
+	games := ui.store.Current().Games
 	offBoard := offBoardIndices(games)
 
 	// Built early and reused below (rather than rebuilt) so the same
@@ -396,7 +396,7 @@ func (ui *GameManagerUI) buildOffBoardSection(offBoard []int) fyne.CanvasObject 
 // maximum" live resizing caps out at — rather than its bare MinSize floor,
 // which is deliberately tiny to allow shrinking while the window is open.
 func (ui *GameManagerUI) preferredWindowSize() fyne.Size {
-	games := ui.appRef.config.Games
+	games := ui.store.Current().Games
 	rangeStart, rangeEnd := computeBoardHourRange(games)
 	hourSpan := float32(rangeEnd - rangeStart)
 
@@ -445,13 +445,13 @@ func (ui *GameManagerUI) preferredWindowSize() fyne.Size {
 func (ui *GameManagerUI) newScheduleBlock(game config.Game, timeRange string) fyne.CanvasObject {
 	return newScheduleBlockWidget(game.GameName, timeRange, func() {
 		ui.showGameEditor(&game, false, func(updated config.Game) {
-			for i := range ui.appRef.config.Games {
-				if ui.appRef.config.Games[i].GameName == game.GameName {
-					ui.appRef.config.Games[i] = updated
+			for i := range ui.store.Current().Games {
+				if ui.store.Current().Games[i].GameName == game.GameName {
+					ui.store.Current().Games[i] = updated
 					break
 				}
 			}
-			ui.appRef.saveConfig()
+			ui.save()
 			fyne.Do(ui.refresh)
 		}, func() {
 			ui.deleteGameByName(game.GameName)
@@ -502,7 +502,7 @@ func (ui *GameManagerUI) buildOffBoardList(indices []int) fyne.CanvasObject {
 				return
 			}
 			gi := indices[id]
-			game := ui.appRef.config.Games[gi]
+			game := ui.store.Current().Games[gi]
 			row := rows[obj]
 
 			row.card.FillColor = colorSurface()
@@ -515,7 +515,7 @@ func (ui *GameManagerUI) buildOffBoardList(indices []int) fyne.CanvasObject {
 			row.dot.FillColor = colorMuted
 			row.dot.Refresh()
 
-			row.wordText.Text = gameStatusLabel(ui.appRef, game)
+			row.wordText.Text = statusLabel(game)
 			row.wordText.Color = colorMuted
 			row.wordText.TextSize = theme.CaptionTextSize()
 			row.wordText.Refresh()
@@ -523,15 +523,15 @@ func (ui *GameManagerUI) buildOffBoardList(indices []int) fyne.CanvasObject {
 			row.check.Checked = game.Enabled
 			row.check.Refresh()
 			row.check.OnChanged = func(checked bool) {
-				ui.appRef.config.Games[gi].Enabled = checked
-				ui.appRef.saveConfig()
+				ui.store.Current().Games[gi].Enabled = checked
+				ui.save()
 				fyne.Do(ui.refresh)
 			}
 
 			row.editBtn.OnTapped = func() {
 				ui.showGameEditor(&game, false, func(updated config.Game) {
-					ui.appRef.config.Games[gi] = updated
-					ui.appRef.saveConfig()
+					ui.store.Current().Games[gi] = updated
+					ui.save()
 					fyne.Do(ui.refresh)
 				}, func() {
 					ui.deleteGameByName(game.GameName)
@@ -554,21 +554,21 @@ func (ui *GameManagerUI) buildOffBoardList(indices []int) fyne.CanvasObject {
 // happens from several places now (board block editor, off-board row, its
 // editor) so this is the one place that does it.
 func (ui *GameManagerUI) deleteGameByName(name string) {
-	for i, g := range ui.appRef.config.Games {
+	for i, g := range ui.store.Current().Games {
 		if g.GameName == name {
-			ui.appRef.config.Games = append(ui.appRef.config.Games[:i], ui.appRef.config.Games[i+1:]...)
+			ui.store.Current().Games = append(ui.store.Current().Games[:i], ui.store.Current().Games[i+1:]...)
 			break
 		}
 	}
-	ui.appRef.saveConfig()
+	ui.save()
 	fyne.Do(ui.refresh)
 }
 
 func (ui *GameManagerUI) addGameButton() fyne.CanvasObject {
 	return widget.NewButtonWithIcon("Add Game", theme.ContentAddIcon(), func() {
 		ui.showGamePicker(func(created config.Game) {
-			ui.appRef.config.Games = append(ui.appRef.config.Games, created)
-			ui.appRef.saveConfig()
+			ui.store.Current().Games = append(ui.store.Current().Games, created)
+			ui.save()
 			fyne.Do(ui.refresh)
 		})
 	})

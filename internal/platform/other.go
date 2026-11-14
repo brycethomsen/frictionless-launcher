@@ -2,17 +2,12 @@
 
 package platform
 
-import "fyne.io/fyne/v2"
+// PrepareUIProcess keeps a UI process out of the Dock and brings it to the
+// front. macOS-only.
+func PrepareUIProcess() {}
 
-// SetupDockBehavior hides the dock icon (macOS-only) once the Fyne app
-// lifecycle starts, then calls onStarted. No-op on this platform beyond that.
-func SetupDockBehavior(fyneApp fyne.App, onStarted func()) {
-	fyneApp.Lifecycle().SetOnStarted(func() {
-		if onStarted != nil {
-			onStarted()
-		}
-	})
-}
+// HideFromDock keeps the tray process out of the Dock. macOS-only.
+func HideFromDock() {}
 
 // GetFrontmostApp returns the name of the currently frontmost application,
 // or "" if none can be determined. Unsupported on this platform.
