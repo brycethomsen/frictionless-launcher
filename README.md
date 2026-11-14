@@ -8,7 +8,7 @@ mood for. Half an hour later you're on your phone. The hard part of playing
 games after a long day isn't the game, it's getting it started.
 
 Frictionless Launcher removes that step. Decide once which game you play and
-when, for example "Stardew Valley, Thursdays 7 to 9 PM". When that time comes,
+when, for example "Cyberpunk 2077, Saturdays from 8 PM". When that time comes,
 the launcher counts down for a few seconds and starts the game for you, through
 Steam or Epic, so cloud saves, achievements and playtime all work as usual. If
 tonight isn't the night, click Cancel and it stays quiet until next time.
@@ -57,10 +57,10 @@ nights; click one to play right now instead of waiting.
 timer. On macOS it idles at 0% CPU and about 20 MB of memory. The schedule
 board only runs while you have it open.
 
-**Your settings are a plain file.** Games and schedules live in one
-readable YAML file that you can edit by hand, back up, or move between
-machines. Changes are picked up immediately, with no restart, and the board
-can import and export your game list.
+**No setup files to edit.** Games and schedules are set up entirely on the
+board, and changes take effect immediately. Your games are exported and imported in one click,
+and under the hood they're kept in one readable file you can back up or carry
+on a USB stick.
 
 ## Install
 
@@ -109,88 +109,28 @@ the tray icon to open its menu:
 - **Quit**
 
 During a countdown, the top of the menu changes to
-*Stardew Valley launching in 7s... — Cancel*.
+*Cyberpunk 2077 launching in 7s... — Cancel*.
 
-## Configuration
+### Adding a game
 
-Everything you set on the board is saved to `config.yaml`. Editing that file
-by hand works too, and changes take effect without restarting the launcher.
+1. Open **Manage Games...** from the tray and click **Add Game**.
+2. Pick your game from the list of detected Steam and Epic titles, or choose
+   **Enter manually...** for anything else and browse to its executable.
+3. Add one or more time windows: pick the days, a start time and an end
+   time. Use **+ Add Time Window** for, say, weekday evenings plus weekend
+   afternoons.
+4. Click **Save**. The game appears on the board and in the tray menu right
+   away.
 
-### Where it lives
+Click any block on the board to change or delete that game, or untick it to
+stop auto-launching it without losing its schedule.
 
-If a `config.yaml` sits next to the launcher itself, that one is used. This
-is portable mode, handy for a USB stick or a self-contained folder.
-Otherwise:
-
-| OS | Location |
-|---|---|
-| Windows | `%LOCALAPPDATA%\FrictionlessLauncher\config.yaml` |
-| macOS | `~/Library/Application Support/FrictionlessLauncher/config.yaml` |
-| Linux | `~/.config/FrictionlessLauncher/config.yaml` |
-
-The log file, `frictionless-launcher.log`, is kept in the same folder.
-
-### Example
-
-```yaml
-boot_delay: 10   # countdown length, in seconds
-
-games:
-  - game_name: "Stardew Valley"
-    game_path: "steam://rungameid/413150"
-    launch_method: "steam"
-    schedules:
-      - days: [Thu]
-        start_time: "19:00"
-        end_time: "21:00"
-    enabled: true
-
-  - game_name: "Baldur's Gate 3"
-    game_path: "steam://rungameid/1086940"
-    launch_method: "steam"
-    schedules:
-      - days: [Mon, Tue, Wed, Thu, Fri]   # weekday evenings
-        start_time: "18:00"
-        end_time: "22:00"
-      - days: [Sat, Sun]                  # weekend mornings
-        start_time: "09:00"
-        end_time: "12:00"
-    enabled: true
-
-  - game_name: "Hollow Knight"
-    game_path: "C:\\Games\\Hollow Knight\\hollow_knight.exe"
-    launch_method: "direct"
-    launch_args: "-popupwindow"
-    schedules:
-      - days: [Fri]
-        start_time: "20:00"
-        end_time: "23:30"
-    enabled: true
-```
-
-### Fields
-
-| Field | Meaning |
-|---|---|
-| `boot_delay` | Seconds the countdown runs before a game launches. Default `10`. |
-| `game_name` | Shown on the board and in the tray menu. |
-| `game_path` | A `steam://` or `com.epicgames.launcher://` URL, or the full path to an executable. |
-| `launch_method` | `steam`, `epic`, or `direct` (see below). |
-| `launch_args` | Extra command-line arguments. **Direct-launch games only.** |
-| `schedules` | One or more windows, each with `days` (`Mon` to `Sun`), `start_time` and `end_time` in 24-hour `HH:MM`. A window includes its end minute. |
-| `enabled` | `false` keeps the game on the board but never auto-launches it. |
-
-### Launch methods
-
-| Method | Starts the game through | Cloud saves, achievements, playtime | Launch arguments |
-|---|---|---|---|
-| `steam` | Steam (`steam://rungameid/APPID`) | Yes | Set them in Steam: right-click the game, **Properties**, **Launch Options** |
-| `epic` | Epic Games Launcher | Yes | Set them in the Epic launcher |
-| `direct` | The executable itself | Only if the game handles them itself | `launch_args` |
-
-Steam and Epic games you add from the board get the right URL automatically.
-To add one by hand, look up the Steam App ID on [SteamDB](https://steamdb.info)
-or in the game's store page URL (`store.steampowered.com/app/413150/...`).
+Steam and Epic games launch through Steam or Epic, so cloud saves,
+achievements and playtime work as usual. To pass launch options to one, set
+them in Steam or Epic itself: for Cyberpunk 2077, right-click it in Steam,
+choose **Properties**, and put `--launcher-skip` under **Launch Options** to
+go straight into the game. Games added by path launch directly, and take
+their arguments from the **Launch Args** field.
 
 ### Tips
 
@@ -198,9 +138,60 @@ or in the game's store page URL (`store.steampowered.com/app/413150/...`).
   22:00 to 01:00, use two windows: Friday 22:00 to 23:59 and Saturday 00:00
   to 01:00.
 - **Skipping intros:** [PCGamingWiki](https://www.pcgamingwiki.com) lists
-  launch arguments that skip intro videos for most games.
+  launch options that skip intro videos for most games.
 - **Missed the start?** If you turn your computer on, or start the launcher,
   partway through a window, the game still launches after the countdown.
+
+## The settings file
+
+Everything you set up on the board is saved to a single `config.yaml`. You
+never need to open it, but it's there for three things:
+
+- **The countdown length.** This is the one setting the board doesn't have
+  yet. Set `boot_delay` to the number of seconds you want (default `10`).
+- **Backups and moving machines.** Copy the file, or use **Export** and
+  **Import** on the board.
+- **Portable mode.** If a `config.yaml` sits next to the launcher itself, it
+  uses that one instead, which is handy for a USB stick or a self-contained
+  folder.
+
+Edits to the file take effect immediately, without a restart. Otherwise it
+lives here, next to the log file (`frictionless-launcher.log`):
+
+| OS | Location |
+|---|---|
+| Windows | `%LOCALAPPDATA%\FrictionlessLauncher\config.yaml` |
+| macOS | `~/Library/Application Support/FrictionlessLauncher/config.yaml` |
+| Linux | `~/.config/FrictionlessLauncher/config.yaml` |
+
+<details>
+<summary>File format reference</summary>
+
+```yaml
+boot_delay: 10   # countdown length, in seconds
+
+games:
+  - game_name: "Cyberpunk 2077"
+    game_path: "steam://rungameid/1091500"
+    launch_method: "steam"
+    schedules:
+      - days: [Sat, Sun]
+        start_time: "20:00"
+        end_time: "23:59"
+    enabled: true
+```
+
+| Field | Meaning |
+|---|---|
+| `boot_delay` | Seconds the countdown runs before a game launches. Default `10`. |
+| `game_name` | Shown on the board and in the tray menu. |
+| `game_path` | A `steam://rungameid/APPID` or `com.epicgames.launcher://` URL, or the full path to an executable. |
+| `launch_method` | `steam`, `epic`, or `direct` (an executable). |
+| `launch_args` | Command-line arguments. Used by `direct` games only; Steam and Epic games take theirs from Steam or Epic. |
+| `schedules` | One or more windows, each with `days` (`Mon` to `Sun`), `start_time` and `end_time` in 24-hour `HH:MM`. A window includes its end minute. |
+| `enabled` | `false` keeps the game on the board but never auto-launches it. |
+
+</details>
 
 ## Roadmap
 
