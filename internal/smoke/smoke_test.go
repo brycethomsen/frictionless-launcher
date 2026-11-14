@@ -25,6 +25,9 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"frictionless-launcher/internal/config"
 	"frictionless-launcher/internal/launcher"
 )
 
@@ -33,6 +36,7 @@ import (
 // and a home directory of its own so the log and Fyne's preferences don't
 // touch the real ones.
 type smokeEnv struct {
+	dir  string
 	bin  string
 	home string
 }
@@ -72,13 +76,41 @@ func newSmokeEnv(t *testing.T) smokeEnv {
 			t.Fatal(err)
 		}
 	}
-	return smokeEnv{bin: bin, home: home}
+	return smokeEnv{dir: dir, bin: bin, home: home}
+}
+
+// writeConfig replaces the sandbox's config.yaml with cfg.
+func (e smokeEnv) writeConfig(t *testing.T, cfg config.Config) {
+	t.Helper()
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (e smokeEnv) command(args ...string) *exec.Cmd {
 	cmd := exec.Command(e.bin, args...)
 	cmd.Env = append(os.Environ(), "HOME="+e.home, "LOCALAPPDATA="+e.home, "XDG_CONFIG_HOME="+filepath.Join(e.home, ".config"), "XDG_CACHE_HOME="+filepath.Join(e.home, ".cache"))
 	return cmd
+}
+
+// readLog returns the app's log so far, or "" if it hasn't written one.
+func (e smokeEnv) readLog() string {
+	var logPath string
+	_ = filepath.WalkDir(e.home, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.Name() == "frictionless-launcher.log" {
+			logPath = path
+		}
+		return nil
+	})
+	if logPath == "" {
+		return ""
+	}
+	data, _ := os.ReadFile(logPath)
+	return string(data)
 }
 
 // checkLog fails the test if the app's log records a Fyne error or a panic.
@@ -185,4 +217,105 @@ func TestSmoke_Tray(t *testing.T) {
 	env := newSmokeEnv(t)
 	staysUp(t, env.command(), 8*time.Second)
 	env.checkLog(t)
+}
+
+// TestSmokeHelperGame is not a real test: it is the "game" that
+// TestSmoke_ScheduledLaunch has the app launch. It proves it ran by writing
+// the file named in FL_SMOKE_GAME_MARKER (inherited from the tray process).
+func TestSmokeHelperGame(t *testing.T) {
+	marker := os.Getenv("FL_SMOKE_GAME_MARKER")
+	if marker == "" {
+		return
+	}
+	_ = os.WriteFile(marker, []byte("launched"), 0o644)
+	os.Exit(0)
+}
+
+// TestSmoke_ScheduledLaunch is the app's whole job, end to end in the real
+// binary: the tray process starts inside a game's schedule window, counts
+// down the boot delay (with the countdown window, where one can open), and
+// launches the game. The game is a copy of this test binary that writes a
+// marker file.
+func TestSmoke_ScheduledLaunch(t *testing.T) {
+	now := time.Now()
+	if now.Hour() == 23 && now.Minute() >= 58 {
+		t.Skip("too close to midnight for a today-only schedule window")
+	}
+	env := newSmokeEnv(t)
+
+	// The game gets its own name: the app skips launching a direct game
+	// whose executable name is already running, and this test binary is.
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	game := filepath.Join(env.dir, "fake-game")
+	if runtime.GOOS == "windows" {
+		game += ".exe"
+	}
+	if err := os.WriteFile(game, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(env.dir, "game-launched")
+
+	env.writeConfig(t, config.Config{
+		BootDelay: 2,
+		Games: []config.Game{{
+			GameName:     "Smoke Game",
+			GamePath:     game,
+			LaunchMethod: "direct",
+			LaunchArgs:   "-test.run=^TestSmokeHelperGame$",
+			Enabled:      true,
+			Schedules: []config.Schedule{{
+				Days:      []string{now.Weekday().String()[:3]},
+				StartTime: "00:00",
+				EndTime:   "23:59",
+			}},
+		}},
+	})
+
+	cmd := env.command()
+	cmd.Env = append(cmd.Env, "FL_SMOKE_GAME_MARKER="+marker)
+	var output strings.Builder
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-exited
+	})
+
+	deadline := time.After(60 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		select {
+		case err := <-exited:
+			t.Fatalf("tray process exited (%v) before launching the game; output:\n%s\nlog:\n%s", err, output.String(), env.readLog())
+		case <-deadline:
+			t.Fatalf("game was not launched within 60s; log:\n%s", env.readLog())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	// The marker shows the game ran; the log shows it was the scheduler
+	// that ran it, after the countdown.
+	log := env.readLog()
+	t.Logf("app log:\n%s", log)
+	for _, want := range []string{"Boot within schedule window for Smoke Game", "Smoke Game launched successfully"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("app log is missing %q", want)
+		}
+	}
+	if strings.Contains(log, "panic:") {
+		t.Error("app log contains a panic")
+	}
 }
