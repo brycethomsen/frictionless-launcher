@@ -111,7 +111,7 @@ func TestTrayEntries_UpcomingGames(t *testing.T) {
 
 func TestTrayEntries_PendingLaunchShowsOnlyCancel(t *testing.T) {
 	upcoming := []config.Game{{GameName: "Stardew", Enabled: true}}
-	label := "⏳ Stardew launching in 7s... — Cancel"
+	label := "Stardew launching in 7s... — Cancel"
 
 	entries := trayEntries(label, upcoming, time.Now())
 	if entries[0].kind != entryCancel {
@@ -144,8 +144,8 @@ func TestSameMenu(t *testing.T) {
 
 	// The countdown label ticks every second and is updated in place, so it
 	// must not count as a menu change on its own.
-	c5 := []trayEntry{{kind: entryCancel, label: "⏳ X launching in 5s... — Cancel"}}
-	c4 := []trayEntry{{kind: entryCancel, label: "⏳ X launching in 4s... — Cancel"}}
+	c5 := []trayEntry{{kind: entryCancel, label: "X launching in 5s... — Cancel"}}
+	c4 := []trayEntry{{kind: entryCancel, label: "X launching in 4s... — Cancel"}}
 	if !sameMenu(c5, c4) {
 		t.Error("cancel entries differing only in countdown should compare equal")
 	}

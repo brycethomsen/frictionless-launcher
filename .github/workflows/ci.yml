@@ -50,7 +50,13 @@ jobs:
       - name: Run tests with coverage
         run: go test -v -race -coverprofile=coverage.out ./...
 
+      # Linux and macOS only. On Windows, vet can't reuse the -race test
+      # build, so it recompiles all of Fyne's cgo code (GLFW, OpenGL) with
+      # MinGW a second time -- about 6 of the job's ~14 minutes. Vet's
+      # findings are nearly all OS-independent, and the Windows-only Go
+      # files are still compiled and tested by the step above.
       - name: Run go vet
+        if: matrix.os != 'windows-latest'
         run: go vet ./...
 
       - name: Check formatting (Linux only)

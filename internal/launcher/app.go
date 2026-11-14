@@ -130,7 +130,7 @@ func (app *App) PendingLabel() (string, bool) {
 	if app.pending == nil {
 		return "", false
 	}
-	return fmt.Sprintf("⏳ %s launching in %ds... — Cancel", app.pending.gameName, app.pending.secondsLeft), true
+	return fmt.Sprintf("%s launching in %ds... — Cancel", app.pending.gameName, app.pending.secondsLeft), true
 }
 
 // CancelPending cancels the pending launch, if any.
