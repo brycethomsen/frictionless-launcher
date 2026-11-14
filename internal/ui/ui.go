@@ -176,8 +176,11 @@ func (ui *GameManagerUI) showLaunchCountdown(gameName string, seconds int, onDon
 	fill := canvas.NewRectangle(colorIce)
 	fill.Resize(fyne.NewSize(barWidth, barHeight))
 	fill.Move(fyne.NewPos(0, 0))
-	bar := container.NewWithoutLayout(track, fill)
-	bar.Resize(fyne.NewSize(barWidth, barHeight))
+	// The bar is positioned by hand (fill shrinks from the right), so it
+	// has no layout and no minimum size of its own. The GridWrap gives it
+	// one: without it, the centering below sizes it to nothing and puts its
+	// left edge at the midpoint, so the bar ran from the center rightwards.
+	bar := container.NewGridWrap(fyne.NewSize(barWidth, barHeight), container.NewWithoutLayout(track, fill))
 
 	cancelBtn := widget.NewButton("Cancel", func() { close(cancelled) })
 	cancelBtn.Importance = widget.LowImportance

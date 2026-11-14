@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -20,13 +21,28 @@ type DiscoveredGame struct {
 }
 
 // DiscoverGames scans every supported launcher (Steam, Epic) for installed
-// games. Launchers that aren't installed, or whose manifests can't be found,
-// simply contribute nothing — this never errors.
+// games, sorted by name (see sortGames). Launchers that aren't installed, or
+// whose manifests can't be found, simply contribute nothing — this never
+// errors.
 func DiscoverGames() []DiscoveredGame {
 	var games []DiscoveredGame
 	games = append(games, discoverSteamGames()...)
 	games = append(games, discoverEpicGames()...)
+	sortGames(games)
 	return games
+}
+
+// sortGames orders games alphabetically by name, ignoring case, so the "Add
+// Game" picker reads as one list rather than each launcher's games in
+// manifest order. The same game installed through two launchers sorts by
+// launcher, so the order never depends on which was scanned first.
+func sortGames(games []DiscoveredGame) {
+	slices.SortStableFunc(games, func(a, b DiscoveredGame) int {
+		if c := strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.LaunchMethod, b.LaunchMethod)
+	})
 }
 
 // --- Steam ---

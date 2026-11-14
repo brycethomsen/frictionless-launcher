@@ -8,10 +8,12 @@
 					<text alignment="center" color="rgba(69,196,229,255)" monospace pos="4,4" size="324x74" textSize="64">30</text>
 				</container>
 				<text alignment="center" color="disabled button" pos="0,134" size="332x14" textSize="11">seconds until launch</text>
-				<container pos="0,152" size="332x1">
-					<container pos="165,0" size="1x1">
-						<rectangle fillColor="rgba(69,196,229,51)" size="260x3"/>
-						<rectangle fillColor="rgba(69,196,229,255)" size="260x3"/>
+				<container pos="0,152" size="332x3">
+					<container pos="36,0" size="260x3">
+						<container size="260x3">
+							<rectangle fillColor="rgba(69,196,229,51)" size="260x3"/>
+							<rectangle fillColor="rgba(69,196,229,255)" size="260x3"/>
+						</container>
 					</container>
 				</container>
 			</container>

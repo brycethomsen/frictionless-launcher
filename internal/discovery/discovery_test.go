@@ -190,3 +190,36 @@ func TestDiscoverGames_ReturnsSlice(t *testing.T) {
 	games := DiscoverGames()
 	_ = games // just ensure it doesn't panic
 }
+
+// ---- sortGames ---------------------------------------------------------------
+
+func TestSortGames_AlphabeticalIgnoringCaseAndLauncher(t *testing.T) {
+	games := []DiscoveredGame{
+		{Name: "Stardew Valley", LaunchMethod: "steam"},
+		{Name: "celeste", LaunchMethod: "steam"},
+		{Name: "Fortnite", LaunchMethod: "epic"},
+		{Name: "Alan Wake 2", LaunchMethod: "epic"},
+		{Name: "Balatro", LaunchMethod: "steam"},
+	}
+	sortGames(games)
+
+	var got []string
+	for _, g := range games {
+		got = append(got, g.Name)
+	}
+	want := []string{"Alan Wake 2", "Balatro", "celeste", "Fortnite", "Stardew Valley"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("sorted to %q, want %q", got, want)
+	}
+}
+
+func TestSortGames_SameNameOrdersByLauncher(t *testing.T) {
+	games := []DiscoveredGame{
+		{Name: "Hades", LaunchMethod: "steam"},
+		{Name: "Hades", LaunchMethod: "epic"},
+	}
+	sortGames(games)
+	if games[0].LaunchMethod != "epic" || games[1].LaunchMethod != "steam" {
+		t.Errorf("got %s then %s, want epic then steam", games[0].LaunchMethod, games[1].LaunchMethod)
+	}
+}
