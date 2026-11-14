@@ -1,6 +1,6 @@
 module frictionless-launcher
 
-go 1.26.3
+go 1.27.4
 
 require (
 	fyne.io/fyne/v2 v2.8.2
