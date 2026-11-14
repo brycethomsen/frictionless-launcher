@@ -176,8 +176,11 @@ func (ui *GameManagerUI) showLaunchCountdown(gameName string, seconds int, onDon
 	fill := canvas.NewRectangle(colorIce)
 	fill.Resize(fyne.NewSize(barWidth, barHeight))
 	fill.Move(fyne.NewPos(0, 0))
-	bar := container.NewWithoutLayout(track, fill)
-	bar.Resize(fyne.NewSize(barWidth, barHeight))
+	// The bar is positioned by hand (fill shrinks from the right), so it
+	// has no layout and no minimum size of its own. The GridWrap gives it
+	// one: without it, the centering below sizes it to nothing and puts its
+	// left edge at the midpoint, so the bar ran from the center rightwards.
+	bar := container.NewGridWrap(fyne.NewSize(barWidth, barHeight), container.NewWithoutLayout(track, fill))
 
 	cancelBtn := widget.NewButton("Cancel", func() { close(cancelled) })
 	cancelBtn.Importance = widget.LowImportance
@@ -346,8 +349,33 @@ func (ui *GameManagerUI) importButton() fyne.CanvasObject {
 	})
 }
 
+// discoverGames is discovery.DiscoverGames, swappable in tests.
+var discoverGames = discovery.DiscoverGames
+
+// enterManuallyLabel is the picker's first entry, ahead of the discovered
+// games so it's reachable without scrolling past a long library, and kept
+// whatever the search matches.
+const enterManuallyLabel = "Enter manually..."
+
+// filterGames returns the games whose name contains query, ignoring case
+// and surrounding spaces, in their original order. An empty query matches
+// everything.
+func filterGames(games []discovery.DiscoveredGame, query string) []discovery.DiscoveredGame {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return games
+	}
+	var matched []discovery.DiscoveredGame
+	for _, g := range games {
+		if strings.Contains(strings.ToLower(g.Name), q) {
+			matched = append(matched, g)
+		}
+	}
+	return matched
+}
+
 func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
-	discovered := discovery.DiscoverGames()
+	discovered := discoverGames()
 
 	if len(discovered) == 0 {
 		// No games found — fall straight through to manual entry
@@ -356,31 +384,19 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 		return
 	}
 
-	// Build display names for the list
-	names := make([]string, len(discovered)+1)
-	for i, g := range discovered {
-		names[i] = fmt.Sprintf("%s (%s)", g.Name, g.LaunchMethod)
-	}
-	names[len(discovered)] = "Enter manually..."
+	// Row 0 is always manual entry; row i (i >= 1) is shown[i-1], the
+	// discovered games (already sorted by name) that match the search.
+	shown := discovered
 
 	var pickerDialog *dialog.CustomDialog
 
-	list := widget.NewList(
-		func() int { return len(names) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			obj.(*widget.Label).SetText(names[id])
-		},
-	)
-
-	list.OnSelected = func(id widget.ListItemID) {
+	openManual := func() {
 		pickerDialog.Hide()
-		if id >= len(discovered) {
-			blank := config.Game{Enabled: true}
-			ui.showGameEditor(&blank, false, onSave, nil)
-			return
-		}
-		d := discovered[id]
+		blank := config.Game{Enabled: true}
+		ui.showGameEditor(&blank, false, onSave, nil)
+	}
+	openGame := func(d discovery.DiscoveredGame) {
+		pickerDialog.Hide()
 		g := config.Game{
 			GameName:     d.Name,
 			GamePath:     d.GamePath,
@@ -390,12 +406,51 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 		ui.showGameEditor(&g, true, onSave, nil)
 	}
 
+	list := widget.NewList(
+		func() int { return len(shown) + 1 },
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			label := enterManuallyLabel
+			if id > 0 {
+				g := shown[id-1]
+				label = fmt.Sprintf("%s (%s)", g.Name, g.LaunchMethod)
+			}
+			obj.(*widget.Label).SetText(label)
+		},
+	)
+	list.OnSelected = func(id widget.ListItemID) {
+		if id == 0 {
+			openManual()
+			return
+		}
+		openGame(shown[id-1])
+	}
+
+	search := widget.NewEntry()
+	search.SetPlaceHolder("Search games")
+	search.OnChanged = func(query string) {
+		shown = filterGames(discovered, query)
+		list.UnselectAll()
+		list.Refresh()
+		list.ScrollToTop()
+	}
+	// Enter takes the first match, so a few letters and Enter adds a game
+	// without reaching for the mouse. With no match there's nothing to take.
+	search.OnSubmitted = func(string) {
+		if len(shown) > 0 {
+			openGame(shown[0])
+		}
+	}
+
 	cancelBtn := widget.NewButton("Cancel", func() {
 		pickerDialog.Hide()
 	})
 
 	content := container.NewBorder(
-		widget.NewLabel("Select an installed game or enter manually:"),
+		container.NewVBox(
+			widget.NewLabel("Select an installed game or enter manually:"),
+			search,
+		),
 		cancelBtn, nil, nil,
 		list,
 	)
@@ -403,6 +458,7 @@ func (ui *GameManagerUI) showGamePicker(onSave func(config.Game)) {
 	pickerDialog = dialog.NewCustomWithoutButtons("Add Game", content, ui.window)
 	pickerDialog.Resize(clampDialogSize(ui.window, fyne.NewSize(420, 400)))
 	pickerDialog.Show()
+	ui.window.Canvas().Focus(search)
 }
 
 // clampDialogSize caps want to the window's current canvas size (minus a
