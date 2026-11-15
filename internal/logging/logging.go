@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"frictionless-launcher/internal/platform"
+	"frictionless-launcher/internal/version"
 )
 
 const (
@@ -58,7 +60,7 @@ func setupIn(dir string, housekeeping bool) func() {
 
 	log.SetOutput(file)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Printf("=== Frictionless Launcher started ===")
+	log.Printf("=== Frictionless Launcher %s (%s/%s) started ===", version.String(), runtime.GOOS, runtime.GOARCH)
 
 	closed := false
 	return func() {

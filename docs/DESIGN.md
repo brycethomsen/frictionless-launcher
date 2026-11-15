@@ -34,6 +34,7 @@ internal/
   tray/        systray icon + menu (implements launcher.Tray)         — never imports Fyne
   ui/          all Fyne code: --manage board, editor/picker, --countdown window, theme
   logging/     log file setup/rotation (only the tray process rotates)
+  version/     build version for the log's startup line (stamped by goreleaser)
   platform/    per-OS code: Dock/frontmost app (CGo, macOS), data dir, open file, .ico tray icon
   discovery/   Steam + Epic install discovery
   assets/      embedded icon.png
