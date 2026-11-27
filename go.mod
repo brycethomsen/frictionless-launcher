@@ -3,7 +3,7 @@ module frictionless-launcher
 go 1.27.4
 
 require (
-	fyne.io/fyne/v2 v2.8.2
+	fyne.io/fyne/v2 v2.8.3
 	fyne.io/systray v1.12.3-0.20260810170012-af4e8e793ec4
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/fyne-io/image v0.1.1
